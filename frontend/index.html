@@ -9,5 +9,80 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <!--
+      Boot check. A blank page is the worst failure mode for a marketplace app:
+      the bundle 404s, nothing executes, and there is nothing on screen to
+      explain why. This script is inline, so it runs even when the bundle never
+      loads. If the app has not mounted, it reports what was actually requested
+      and what came back, instead of showing nothing.
+    -->
+    <script>
+      (function () {
+        var GRACE_MS = 6000;
+        function esc(s) {
+          return String(s).replace(/[&<>"]/g, function (c) {
+            return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+          });
+        }
+        function apiBase() {
+          var m = location.pathname.match(/^\/p\/[^/]+/);
+          return (m ? m[0] : "") + "/api";
+        }
+        function probe(url) {
+          return fetch(url, { method: "GET" }).then(
+            function (r) {
+              return { url: url, status: r.status, type: r.headers.get("content-type") || "?" };
+            },
+            function (e) {
+              return { url: url, status: 0, type: "network error: " + e.message };
+            }
+          );
+        }
+        function report() {
+          var root = document.getElementById("root");
+          if (root && root.childNodes.length > 0) return; // app mounted; nothing to do
+
+          var assets = [];
+          [].forEach.call(document.querySelectorAll("script[src], link[rel=stylesheet]"), function (el) {
+            var u = el.src || el.href;
+            if (u && u.indexOf("data:") !== 0) assets.push(u);
+          });
+
+          Promise.all(assets.concat([location.origin + apiBase() + "/health"]).map(probe)).then(function (rows) {
+            var ok = function (r) { return r.status >= 200 && r.status < 300; };
+            document.body.innerHTML =
+              '<div style="font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;max-width:860px;margin:48px auto;padding:0 24px;color:#111">' +
+              '<h1 style="font:700 18px/1.3 system-ui,sans-serif;margin:0 0 6px">Signal CS did not start</h1>' +
+              '<p style="color:#6b6b6b;margin:0 0 22px;font:400 13px/1.5 system-ui,sans-serif">' +
+              "The page loaded but the application bundle never ran. The checks below show what the browser asked for and what came back." +
+              "</p>" +
+              '<table style="border-collapse:collapse;width:100%;font-size:12px">' +
+              '<tr style="text-align:left;color:#6b6b6b"><th style="padding:6px 8px;border-bottom:1px solid #ececec">Request</th>' +
+              '<th style="padding:6px 8px;border-bottom:1px solid #ececec;width:70px">Status</th>' +
+              '<th style="padding:6px 8px;border-bottom:1px solid #ececec;width:180px">Content-Type</th></tr>' +
+              rows
+                .map(function (r) {
+                  return (
+                    '<tr><td style="padding:6px 8px;border-bottom:1px solid #f4f4f4;word-break:break-all">' + esc(r.url) + "</td>" +
+                    '<td style="padding:6px 8px;border-bottom:1px solid #f4f4f4;color:' + (ok(r) ? "#00994f" : "#df2f4a") + '">' + esc(r.status) + "</td>" +
+                    '<td style="padding:6px 8px;border-bottom:1px solid #f4f4f4">' + esc(r.type) + "</td></tr>"
+                  );
+                })
+                .join("") +
+              "</table>" +
+              '<pre style="background:#fafafa;border:1px solid #ececec;border-radius:8px;padding:12px;margin-top:20px;font-size:11.5px;white-space:pre-wrap">' +
+              esc(
+                "page url      " + location.href + "\n" +
+                "mount prefix  " + (location.pathname.match(/^\/p\/[^/]+/) || ["(none — served at root)"])[0] + "\n" +
+                "api base      " + apiBase() + "\n" +
+                "asset refs    " + (assets.length ? assets.join("\n              ") : "(none found in the document)")
+              ) +
+              "</pre></div>";
+          });
+        }
+        if (document.readyState === "complete") setTimeout(report, GRACE_MS);
+        else window.addEventListener("load", function () { setTimeout(report, GRACE_MS); });
+      })();
+    </script>
   </body>
 </html>
