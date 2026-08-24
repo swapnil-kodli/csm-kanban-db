@@ -19,5 +19,14 @@ RUN npm run build
 FROM nginx:1.27-alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# nginx resolves `backend` while loading the config, so it refuses to start at
+# all ("host not found in upstream") if the backend container has no DNS name
+# yet. Wait briefly for the name to appear, then start regardless — a container
+# that exits is restarted by compose, but one that never serves the shell is a
+# blank page.
+COPY docker-entrypoint.sh /docker-entrypoint-signal.sh
+RUN chmod +x /docker-entrypoint-signal.sh
+
 EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["/docker-entrypoint-signal.sh"]

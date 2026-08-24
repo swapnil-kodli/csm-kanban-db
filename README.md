@@ -83,5 +83,26 @@ topbar flips from green `LIVE` to amber `LOCAL`, and a banner says changes will
 not save. The board degrades; it never goes blank. Writes never fall back — a
 silent no-op would lie about what was saved.
 
+## Troubleshooting a deployment
+
+**Board is empty / amber `LOCAL` dot / "board could not load".** The `/api` route
+is not reaching the backend. Open the network tab and check one API request:
+
+- *Request URL contains `//api`* — the injected `VITE_API_URL` carried a trailing
+  slash and was concatenated naively. `frontend/src/lib/api.ts` strips trailing
+  slashes for exactly this reason, so a doubled slash means an older build is
+  still deployed. `INSTRUCTIONS.md` is itself inconsistent here: §6 injects
+  `/p/{slug}` while §7's compose example uses `/p/{slug}/`. Both must work.
+- *Response is `200 text/html`* — the request fell through to the SPA fallback
+  instead of the proxy. That looks like success to `fetch`, so the client raises
+  it explicitly: "returned text/html instead of JSON — the /api proxy route is
+  not reaching the backend (resolved base: …)". Check the nginx `location` blocks.
+- *Response is `502`* — nginx is up and the backend is not. Check the backend
+  container logs; the first boot seeds the database.
+
+**Frontend container restarting.** nginx resolves `backend` while loading its
+config and refuses to start if that name does not exist yet. The image's
+entrypoint waits up to 30s for it before starting nginx.
+
 See `FUTURE.md` for what was deliberately left out, and for the handful of
 documented deviations from the specs.
