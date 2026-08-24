@@ -11,13 +11,30 @@ RUN npm ci && npx --no-install tsc --version && npx --no-install vite --version
 
 # BASE_PATH and VITE_API_URL are baked in at `npm run build`, so they must be
 # declared and promoted to ENV *before* the build step runs.
-ARG BASE_PATH=/
+#
+# Both default to EMPTY, not "/". A "/" default is worse than no value at all:
+# it is truthy, so it silently wins over every fallback and bakes root-absolute
+# /assets/... into index.html. The marketplace routes anything outside
+# /p/{slug}/ to its own app, which answers 200 text/html, so the browser
+# rejects the module and the page renders blank with no console error.
+# Empty lets vite.config.ts fall back to a relative base that works under any
+# mount point. Pass --build-arg BASE_PATH=/p/{slug}/ to pin it explicitly.
+ARG BASE_PATH=
 ARG VITE_API_URL=
 ENV BASE_PATH=$BASE_PATH
 ENV VITE_API_URL=$VITE_API_URL
 
 COPY . .
 RUN npm run build
+
+# INSTRUCTIONS.md §9: the built index.html must not reference /assets/... .
+# Enforce it here so a bad base path fails the build instead of shipping a
+# blank page that only shows up after deployment.
+RUN if grep -qE '(src|href)="/assets/' dist/index.html; then \
+      echo "FATAL: index.html references root-absolute /assets/ — this blanks on marketplace." >&2; \
+      grep -oE '(src|href)="[^"]*"' dist/index.html >&2; \
+      exit 1; \
+    fi
 
 # --- serve ---------------------------------------------------------------
 FROM nginx:1.27-alpine
