@@ -9,10 +9,21 @@ import "@fontsource/inter/800.css";
 import "./styles.css";
 import App from "./App";
 
+function mountPrefix(): string {
+  const match = window.location.pathname.match(/^\/p\/[^/]+/);
+  if (match) return match[0];
+  // BASE_URL is "./" when the app is built with a relative base, which is not a
+  // usable basename — React Router would match nothing and render null.
+  const injected = import.meta.env.BASE_URL;
+  return injected && injected.startsWith("/") ? injected : "/";
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    {/* Marketplace serves the app under /p/{slug}/ — the basename is injected. */}
-    <BrowserRouter basename={import.meta.env.BASE_URL || "/"}>
+    {/* The marketplace serves the app under /p/{slug}/. Prefer the prefix the
+        app is actually mounted at over the one baked in at build time — the
+        build pipeline does not reliably receive the slug. */}
+    <BrowserRouter basename={mountPrefix()}>
       <App />
     </BrowserRouter>
   </React.StrictMode>

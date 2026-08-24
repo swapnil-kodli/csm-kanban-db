@@ -85,6 +85,27 @@ silent no-op would lie about what was saved.
 
 ## Troubleshooting a deployment
 
+**Blank page, nothing renders.** Check what `index.html` references:
+
+```bash
+curl -s https://<host>/p/<slug>/ | grep -o 'src="[^"]*"'
+```
+
+- *`src="/assets/…"`* (root-absolute) — the build did not receive `BASE_PATH`.
+  Anything outside `/p/{slug}/` is routed to the marketplace app, not to this
+  deployment, so no JavaScript ever loads. This is why the build now falls back
+  to **relative** asset URLs: `vite.config.ts` resolves `BASE_PATH` from the
+  build arg, then from `frontend/.env` via `loadEnv` (Vite does not put `.env`
+  onto `process.env`, which is the trap), and finally emits `./assets/…`, which
+  resolves correctly under any slug.
+- *`src="./assets/…"`* — correct and slug-independent. Expected.
+- *`src="/p/some-other-slug/assets/…"`* — a slug was pinned at build time and it
+  does not match where the app is served. Unset `BASE_PATH` and rebuild.
+
+The app does not depend on knowing its slug: the router basename and the API
+base are both derived from `window.location` at runtime, with the build-time
+values used only as a fallback.
+
 **Board is empty / amber `LOCAL` dot / "board could not load".** The `/api` route
 is not reaching the backend. Open the network tab and check one API request:
 

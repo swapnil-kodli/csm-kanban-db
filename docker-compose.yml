@@ -14,9 +14,15 @@ services:
   frontend:
     build:
       context: ./frontend
+      # Overridable, and empty by default on purpose. The deploy pipeline runs
+      # a plain `docker build` and does not pass these through, and the slug
+      # baked here can differ from the one the app is served under. With them
+      # empty the frontend emits relative asset URLs and resolves its API base
+      # from the live URL, so it works under any /p/{slug}/. Export BASE_PATH
+      # and VITE_API_URL before `docker compose build` to pin them.
       args:
-        BASE_PATH: /p/signal-cs/
-        VITE_API_URL: /p/signal-cs/
+        BASE_PATH: ${BASE_PATH:-}
+        VITE_API_URL: ${VITE_API_URL:-}
     depends_on:
       - backend
     ports:

@@ -3,13 +3,39 @@
  * A failed fetch falls back to the last good payload and flips the source dot to
  * `local` — the board degrades, it never blanks.
  */
-// INSTRUCTIONS.md §6 injects `/p/{slug}` while §7's compose example uses
-// `/p/{slug}/`, so the injected value may or may not carry a trailing slash.
-// Concatenating the slashed form produces `/p/{slug}//api`, which the
-// marketplace router does not resolve — it falls through to the SPA and
-// returns index.html with a 200. Normalise instead of trusting the input.
-const API_ROOT = (import.meta.env.VITE_API_URL || "").replace(/\/+$/, "");
+/**
+ * Where the app is actually mounted, read from the URL in the address bar.
+ * The marketplace serves each deployment at /p/{slug}/ and routes anything
+ * outside that prefix to its own dashboard.
+ */
+function detectMountPrefix(): string {
+  if (typeof window === "undefined") return "";
+  const match = window.location.pathname.match(/^\/p\/[^/]+/);
+  return match ? match[0] : "";
+}
+
+/**
+ * Build-time injection is a hint, not the truth. The pipeline does not reliably
+ * pass build args, and the slug baked at build time can differ from the one the
+ * app is served under. The live path always wins; the injected value is the
+ * fallback for a mount that is not under /p/.
+ *
+ * Trailing slashes are stripped: §6 injects `/p/{slug}` while §7's compose
+ * example uses `/p/{slug}/`, and concatenating the slashed form onto "/api"
+ * yields `/p/{slug}//api`, which the marketplace router does not resolve.
+ */
+const INJECTED_ROOT = (import.meta.env.VITE_API_URL || "").trim().replace(/\/+$/, "");
+const API_ROOT = detectMountPrefix() || INJECTED_ROOT;
 const API_BASE = `${API_ROOT}/api`;
+
+export function apiDiagnostics() {
+  return {
+    apiBase: API_BASE,
+    detectedPrefix: detectMountPrefix(),
+    injected: import.meta.env.VITE_API_URL ?? null,
+    baseUrl: import.meta.env.BASE_URL,
+  };
+}
 
 export type SourceState = "live" | "local";
 
