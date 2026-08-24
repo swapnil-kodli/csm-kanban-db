@@ -3,7 +3,11 @@ FROM node:20-alpine AS build
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci
+# `npm ci` has been observed to crash with "Exit handler never called!" and
+# still exit 0, leaving node_modules incomplete. The build then dies further
+# down with a confusing "tsc: not found". Verify the toolchain is actually
+# present so a broken install fails here, loudly, instead of shipping.
+RUN npm ci && npx --no-install tsc --version && npx --no-install vite --version
 
 # BASE_PATH and VITE_API_URL are baked in at `npm run build`, so they must be
 # declared and promoted to ENV *before* the build step runs.
