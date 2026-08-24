@@ -6,3 +6,4 @@ __pycache__/
 backend/data/*.db
 .DS_Store
 *.zip
+*.tsbuildinfo
