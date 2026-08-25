@@ -31,7 +31,28 @@ class Stamped(SQLModel):
 # Two independent axes, deliberately not collapsed into one field:
 #   column     = where the engagement sits in the delivery pipeline (drag-drop)
 #   workstream = what the team is actively doing on it right now (drawer only)
-COLUMNS = ("ready_for_onboarding", "onboarding", "working", "approval", "launch")
+# Column keys are no longer an enum — they live in the board_column table and
+# are user-defined. These are the seeded defaults, kept as constants only so the
+# seed and the v3 migration agree on what "the v2 board" was.
+DEFAULT_COLUMN_KEYS = (
+    "ready_for_onboarding",
+    "onboarding",
+    "working",
+    "approval",
+    "launch",
+)
+
+# Recolouring is restricted to the token palette, not a free colour picker —
+# the board's restraint is a feature, and one saturated channel is reserved for
+# health.
+COLUMN_PALETTE = (
+    "#9d50dd",  # s-handoff
+    "#2bb4d6",  # s-onboarding
+    "#6b6b6b",  # s-adopting
+    "#f5b400",  # s-renewal
+    "#00c875",  # s-healthy
+    "#df2f4a",  # s-churned
+)
 WORKSTREAMS = ("bot_making", "data_procurement", "voice_ai_calling")
 MODES = ("pilot", "customer")
 CLIENT_TYPES = ("voice_ai_only", "data_plus_voice_ai")
@@ -65,10 +86,7 @@ class Account(Stamped, table=True):
     name: str = Field(index=True)
 
     # --- the two axes ------------------------------------------------------
-    # Plain str: no DB enum, no CHECK, and deliberately NO index. v3 converts
-    # this to column_id against a board_column table, and an index on a column
-    # blocks ALTER TABLE ... DROP COLUMN in SQLite.
-    column: str = Field(default="ready_for_onboarding")
+    column_id: str = Field(foreign_key="boardcolumn.id")
     workstream: str = Field(default="bot_making", index=True)
     column_changed_at: Optional[datetime] = None        # drives `column_stalled`
 
@@ -186,6 +204,33 @@ class SavedView(Stamped, table=True):
     pinned: bool = False
     is_default: bool = False
     sort_index: float = 0.0
+
+
+class BoardColumn(Stamped, table=True):
+    """A user-defined board column.
+
+    `key` is a slug, immutable after create, so saved views and filters that
+    reference it keep working across a rename.
+
+    Two flags carry behaviour that v2 hardcoded to the literal
+    "ready_for_onboarding" / "launch" column keys:
+
+      is_default_entry    exactly one column has it. New accounts land here,
+                          and it IS the handoff inbox — same idea, one flag.
+      stalled_after_days  nullable. When set, cards sitting in this column
+                          longer than N days get the stalled badge and the
+                          dashed left border. NULL means no stall tracking at
+                          all, which is how a terminal column opts out.
+    """
+
+    key: str = Field(unique=True)
+    label: str
+    color: str = "#6b6b6b"
+    position: float = 0.0
+    is_archived: bool = False
+    is_default_entry: bool = False
+    description: Optional[str] = None
+    stalled_after_days: Optional[int] = None
 
 
 class GoogleCredential(Stamped, table=True):
