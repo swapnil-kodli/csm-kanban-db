@@ -327,7 +327,6 @@ export function QuickFilters({ filters, onFilters }: QuickFiltersProps) {
 
       {countFilters(filters) > 0 && (
         <>
-          <span className="qf-divider" />
           <button type="button" className="chip" onClick={() => onFilters({})}>
             <X size={12} strokeWidth={2.4} /> Clear
           </button>
