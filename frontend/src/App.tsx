@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import type {
-  AccountDetail, BoardResponse, BoardView, Card, Column, Filters, GroupBy,
+  AccountCard, AccountDetail, BoardResponse, Filters, GroupBy,
   HealthBand, Metric, SavedView, TaskBucket,
 } from "./lib/types";
 import { apiDelete, apiGet, apiPatch, apiPost, getSource, onSourceChange, qs } from "./lib/api";
 import type { SourceState } from "./lib/api";
 import { Board, BoardSkeleton } from "./components/Board";
 import { DegradedBanner, MetricsStrip, QuickFilters, TopBar } from "./components/Shell";
-import { Drawer, NewTaskDialog } from "./components/Drawer";
+import { Drawer } from "./components/Drawer";
+import { NewTaskDialog } from "./components/NewTaskDialog";
 import { CommandPalette, OverrideDialog } from "./components/Palette";
 
-const VIEW_KEY = "signal-cs:view";
 const GROUP_KEY = "signal-cs:group-by";
 
 function readStored<T extends string>(key: string, fallback: T, allowed: readonly T[]): T {
@@ -41,8 +41,18 @@ export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const [view, setView] = useState<BoardView>(() => readStored(VIEW_KEY, "work", ["work", "health", "lifecycle"] as const));
-  const [groupBy, setGroupBy] = useState<GroupBy>(() => readStored(GROUP_KEY, "none", ["none", "priority", "segment", "renewal_month"] as const));
+  const [groupBy, setGroupBy] = useState<GroupBy>(() =>
+    readStored(GROUP_KEY, "none", ["none", "priority", "mode", "client_type", "workstream"] as const)
+  );
+  const [collapsedLanes, setCollapsedLanes] = useState<Set<string>>(new Set());
+
+  const toggleLane = useCallback((key: string) => {
+    setCollapsedLanes((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  }, []);
   const [filters, setFiltersState] = useState<Filters>(() => filtersFromSearch(location.search));
 
   const [board, setBoard] = useState<BoardResponse | null>(null);
@@ -68,7 +78,6 @@ export default function App() {
   const composerRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => onSourceChange(setSource), []);
-  useEffect(() => { try { localStorage.setItem(VIEW_KEY, view); } catch { /* private mode */ } }, [view]);
   useEffect(() => { try { localStorage.setItem(GROUP_KEY, groupBy); } catch { /* private mode */ } }, [groupBy]);
 
   const setFilters = useCallback((next: Filters) => {
@@ -91,9 +100,9 @@ export default function App() {
   );
 
   const loadBoard = useCallback(async () => {
-    const data = await apiGet<BoardResponse>(`/board${qs({ view, group_by: groupBy, filters: filterParam })}`);
+    const data = await apiGet<BoardResponse>(`/board${qs({ group_by: groupBy, filters: filterParam })}`);
     setBoard(data);
-  }, [view, groupBy, filterParam]);
+  }, [groupBy, filterParam]);
 
   const loadMetrics = useCallback(async () => {
     const data = await apiGet<{ metrics: Metric[] }>("/metrics");
@@ -150,18 +159,21 @@ export default function App() {
   const openAccount = useCallback((accountId: string) => setOpenAccountId(accountId), []);
 
   // --- writes ---------------------------------------------------------------
-  async function handleDrop(cardId: string, columnKey: string, dropAction: Column["drop_action"]) {
-    if (!board) return;
-
-    if (dropAction === "health_override") {
-      // Dropping in HEALTH never silently reclassifies — it asks for a reason.
-      setOverrideFor({ accountId: cardId, band: columnKey as HealthBand });
-      setOpenAccountId(cardId);
-      return;
+  async function patchAccount(accountId: string, patch: Record<string, unknown>) {
+    try {
+      await apiPatch(`/accounts/${accountId}`, patch);
+      await Promise.all([loadBoard(), loadDetail(accountId), loadMetrics()]);
+    } catch {
+      toast("Could not save that change", true);
     }
+  }
 
+  async function handleDrop(cardId: string, columnKey: string) {
+    if (!board) return;
     const snapshot = board;
-    // Optimistic move.
+
+    // Optimistic move. Dragging changes the column and nothing else — the
+    // workstream is a separate axis, edited in the drawer only.
     setBoard({
       ...board,
       columns: board.columns.map((col) => {
@@ -169,19 +181,14 @@ export default function App() {
         if (col.key !== columnKey) return { ...col, cards: without, count: without.length };
         const moved = board.columns.flatMap((c) => c.cards).find((c) => c.id === cardId);
         if (!moved) return { ...col, cards: without, count: without.length };
-        const next: Card = moved.kind === "task"
-          ? { ...moved, bucket: columnKey as TaskBucket, status: columnKey === "done" ? "done" : "open" }
-          : { ...moved, lifecycle_stage: columnKey };
+        const next: AccountCard = { ...moved, column: columnKey as AccountCard["column"] };
         return { ...col, cards: [next, ...without], count: without.length + 1 };
       }),
     });
 
     try {
-      if (dropAction === "task_bucket") {
-        await apiPatch(`/tasks/${cardId}`, { bucket: columnKey, sort_index: Date.now() / 1000 });
-      } else {
-        await apiPatch(`/accounts/${cardId}`, { lifecycle_stage: columnKey });
-      }
+      // Column only. workstream is a different axis and never moves on drag.
+      await apiPatch(`/accounts/${cardId}`, { column: columnKey });
       await refresh();
     } catch {
       setBoard(snapshot);
@@ -245,26 +252,7 @@ export default function App() {
     }
   }
 
-  async function toggleMilestone(milestoneId: string, done: boolean) {
-    if (!openAccountId) return;
-    try {
-      await apiPatch(`/accounts/${openAccountId}/milestones/${milestoneId}`, { status: done ? "done" : "pending" });
-      await Promise.all([loadDetail(openAccountId), refresh()]);
-    } catch {
-      toast("Could not update that milestone", true);
-    }
-  }
 
-  async function markDeparted(contactId: string) {
-    try {
-      await apiPatch(`/contacts/${contactId}`, { status: "departed" });
-      toast("Contact marked departed — critical alert raised");
-      if (openAccountId) await loadDetail(openAccountId);
-      await refresh();
-    } catch {
-      toast("Could not update that contact", true);
-    }
-  }
 
   // --- filters --------------------------------------------------------------
   function applyMetric(m: Metric) {
@@ -272,7 +260,6 @@ export default function App() {
     setActiveMetric(m.key);
     setActiveSavedView(null);
     setFilters(m.filters);
-    if (m.view) setView(m.view);
   }
 
   function applySavedView(v: SavedView | null) {
@@ -303,13 +290,11 @@ export default function App() {
           e.preventDefault();
           setPaletteOpen(true);
           break;
-        case "1": setView("work"); break;
-        case "2": setView("health"); break;
-        case "3": setView("lifecycle"); break;
         case "g":
-          setGroupBy((g) => (g === "none" ? "priority" : g === "priority" ? "segment" : g === "segment" ? "renewal_month" : "none"));
+          setGroupBy((g) =>
+            g === "none" ? "workstream" : g === "workstream" ? "mode" : g === "mode" ? "priority" : "none"
+          );
           break;
-        case "t": setView("work"); break;
         case "c": {
           const accountId = openAccountId ?? visibleCards[0]?.account_id;
           if (accountId) setNewTaskFor(accountId);
@@ -353,11 +338,9 @@ export default function App() {
       <TopBar
         user={user}
         source={source}
-        view={view}
         groupBy={groupBy}
         filters={filters}
         searchRef={searchRef}
-        onView={setView}
         onGroupBy={setGroupBy}
         onFilters={(f) => { setActiveMetric(null); setActiveSavedView(null); setFilters(f); }}
         onOpenPalette={() => { setPaletteOpen(true); searchRef.current?.blur(); }}
@@ -403,25 +386,24 @@ export default function App() {
       {board && board.total_cards > 0 && (
         <Board
           board={board}
+          groupBy={groupBy}
           selectedId={selectedId}
+          collapsedLanes={collapsedLanes}
+          onToggleLane={toggleLane}
           onOpen={openAccount}
-          onSetNextAction={(accountId) => setNewTaskFor(accountId)}
-          onDrop={handleDrop}
+          onMove={handleDrop}
         />
       )}
 
       {detail && openAccountId && (
         <Drawer
           detail={detail}
-          composerRef={composerRef}
           onClose={() => setOpenAccountId(null)}
+          onPatch={(patch) => patchAccount(openAccountId, patch)}
           onLogActivity={logActivity}
-          onToggleTask={toggleTask}
-          onCreateTask={(title, bucket) => createTask(openAccountId, title, bucket)}
-          onOverride={() => setOverrideFor({ accountId: openAccountId, band: detail.health.override?.band ?? null })}
+          onToggleTask={(task) => toggleTask(task.id, task.status !== "done")}
+          onOverride={(band, reason) => saveOverride(band as HealthBand, reason)}
           onClearOverride={clearOverride}
-          onToggleMilestone={toggleMilestone}
-          onMarkDeparted={markDeparted}
         />
       )}
 
@@ -454,8 +436,7 @@ export default function App() {
           savedViews={savedViews}
           onClose={() => setPaletteOpen(false)}
           onOpenAccount={openAccount}
-          onView={setView}
-          onSavedView={applySavedView}
+            onSavedView={applySavedView}
           onNewTask={() => setNewTaskFor(openAccountId ?? visibleCards[0]?.account_id ?? null)}
           onLogActivity={() => composerRef.current?.focus()}
         />

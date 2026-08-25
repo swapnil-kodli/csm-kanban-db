@@ -1,5 +1,5 @@
 /** Indian short scale. Amounts are stored as whole rupees; formatting is a UI job. */
-export function inr(value: number): string {
+export function formatINR(value: number): string {
   if (!value) return "₹0";
   const abs = Math.abs(value);
   if (abs >= 10000000) return `₹${trim(value / 10000000)} Cr`;
@@ -65,4 +65,18 @@ export function isoPlusDays(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() + days);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+
+/** "18d", "3h", "just now" — for thread and activity recency. */
+export function relativeDate(iso: string | null): string {
+  if (!iso) return "—";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "—";
+  const mins = Math.round((Date.now() - then) / 60000);
+  if (mins < 2) return "just now";
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.round(hours / 24)}d`;
 }

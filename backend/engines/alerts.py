@@ -131,7 +131,11 @@ def state_flags(ctx: BookContext, account: Account) -> dict:
         "no_contact": days_since_contact is not None
         and days_since_contact > th["no_contact_days"],
         "stalled_handoff": stalled_handoff,
-        "column_stalled": days_in_column is not None
+        # Launch is the terminal column: sitting there is delivery, not drift.
+        # Flagging it would put a stalled badge on every healthy engagement and
+        # the signal would stop meaning anything.
+        "column_stalled": account.column != "launch"
+        and days_in_column is not None
         and days_in_column > STALLED_COLUMN_DAYS,
         "days_since_contact": days_since_contact,
         "days_in_column": days_in_column,

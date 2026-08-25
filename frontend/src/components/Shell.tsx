@@ -1,29 +1,25 @@
 import { useEffect, useRef, useState } from "react";
 import { Search, SlidersHorizontal, Plus, AlertTriangle, X } from "lucide-react";
-import type { BoardView, Filters, GroupBy, Metric, SavedView } from "../lib/types";
-import { inr } from "../lib/format";
+import type { Filters, GroupBy, Metric, SavedView } from "../lib/types";
+import { formatINR } from "../lib/format";
 
-const VIEW_TABS: { key: BoardView; label: string; hint: string }[] = [
-  { key: "work", label: "My Work", hint: "1" },
-  { key: "health", label: "Health", hint: "2" },
-  { key: "lifecycle", label: "Lifecycle", hint: "3" },
-];
-
+// One board now. The v1 three-view toggle is gone: health became a card
+// indicator and a filter, and tasks moved into the drawer rather than driving
+// columns of their own.
 const GROUP_OPTIONS: { key: GroupBy; label: string }[] = [
   { key: "none", label: "No swimlanes" },
+  { key: "workstream", label: "Workstream" },
+  { key: "mode", label: "Pilot / Customer" },
+  { key: "client_type", label: "Client type" },
   { key: "priority", label: "Priority" },
-  { key: "segment", label: "Account segment" },
-  { key: "renewal_month", label: "Renewal month" },
 ];
 
 interface TopBarProps {
   user: { name: string; initials: string; avatar_color: string } | null;
   source: "live" | "local";
-  view: BoardView;
   groupBy: GroupBy;
   filters: Filters;
   searchRef: React.RefObject<HTMLInputElement>;
-  onView: (v: BoardView) => void;
   onGroupBy: (g: GroupBy) => void;
   onFilters: (f: Filters) => void;
   onOpenPalette: () => void;
@@ -31,7 +27,7 @@ interface TopBarProps {
 }
 
 export function TopBar({
-  user, source, view, groupBy, filters, searchRef, onView, onGroupBy, onFilters, onOpenPalette, onNewTask,
+  user, source, groupBy, filters, searchRef, onGroupBy, onFilters, onOpenPalette, onNewTask,
 }: TopBarProps) {
   const [panelOpen, setPanelOpen] = useState(false);
   const activeCount = countFilters(filters);
@@ -60,21 +56,6 @@ export function TopBar({
           readOnly
         />
         <kbd>⌘K</kbd>
-      </div>
-
-      <div className="tabs" role="group" aria-label="Board view">
-        {VIEW_TABS.map((tab) => (
-          <button
-            key={tab.key}
-            type="button"
-            className="tab"
-            aria-pressed={view === tab.key}
-            title={`${tab.label} (${tab.hint})`}
-            onClick={() => onView(tab.key)}
-          >
-            {tab.label}
-          </button>
-        ))}
       </div>
 
       <div className="topbar-right">
@@ -151,89 +132,89 @@ function FilterPanel({ filters, onFilters, onClose }: { filters: Filters; onFilt
         </div>
       </Group>
 
-      <Group label="2 · Renewal window">
+      <Group label="2 · Mode">
         <div className="popover-chips">
-          {[30, 60, 90].map((w) => (
-            <button key={w} type="button" className="chip" aria-pressed={filters.renewal_window === w}
-              onClick={() => onFilters({ ...filters, renewal_window: filters.renewal_window === w ? undefined : w })}>
-              {w} days
+          {(["pilot", "customer"] as const).map((m) => (
+            <button key={m} type="button" className="chip" aria-pressed={filters.modes?.includes(m) ?? false} onClick={() => toggleIn("modes", m)}>
+              {m}
             </button>
           ))}
-          <button type="button" className="chip" aria-pressed={filters.renewal_window === undefined}
-            onClick={() => onFilters({ ...filters, renewal_window: undefined })}>
-            None
-          </button>
         </div>
       </Group>
 
-      <Group label="3 · ARR range">
+      <Group label="3 · Client type">
+        <div className="popover-chips">
+          {(["voice_ai_only", "data_plus_voice_ai"] as const).map((c) => (
+            <button key={c} type="button" className="chip" aria-pressed={filters.client_types?.includes(c) ?? false} onClick={() => toggleIn("client_types", c)}>
+              {c.replace(/_/g, " ")}
+            </button>
+          ))}
+        </div>
+      </Group>
+
+      <Group label="4 · Workstream">
+        <div className="popover-chips">
+          {(["bot_making", "data_procurement", "voice_ai_calling"] as const).map((w) => (
+            <button key={w} type="button" className="chip" aria-pressed={filters.workstreams?.includes(w) ?? false} onClick={() => toggleIn("workstreams", w)}>
+              {w.replace(/_/g, " ")}
+            </button>
+          ))}
+        </div>
+      </Group>
+
+      <Group label="5 · Column">
+        <div className="popover-chips">
+          {["ready_for_onboarding", "onboarding", "working", "approval", "launch"].map((c) => (
+            <button key={c} type="button" className="chip" aria-pressed={filters.columns?.includes(c) ?? false} onClick={() => toggleIn("columns", c)}>
+              {c.replace(/_/g, " ")}
+            </button>
+          ))}
+        </div>
+      </Group>
+
+      <Group label="6 · Quoted value">
         <div className="popover-chips">
           {[{ l: "≥ ₹10 L", v: 1000000 }, { l: "≥ ₹5 L", v: 500000 }].map((o) => (
-            <button key={o.v} type="button" className="chip" aria-pressed={filters.arr_min === o.v}
-              onClick={() => onFilters({ ...filters, arr_min: filters.arr_min === o.v ? undefined : o.v })}>
+            <button key={o.v} type="button" className="chip" aria-pressed={filters.quoted_min === o.v}
+              onClick={() => onFilters({ ...filters, quoted_min: filters.quoted_min === o.v ? undefined : o.v })}>
               {o.l}
             </button>
           ))}
         </div>
       </Group>
 
-      <Group label="4 · Owner">
+      <Group label="7 · Margin">
         <div className="popover-chips">
-          <button type="button" className="chip" aria-pressed disabled title="Single-CSM MVP">
-            My book
+          <button type="button" className="chip" aria-pressed={filters.negative_margin ?? false}
+            onClick={() => onFilters({ ...filters, negative_margin: filters.negative_margin ? undefined : true })}>
+            negative
+          </button>
+          <button type="button" className="chip" aria-pressed={filters.thin_margin ?? false}
+            onClick={() => onFilters({ ...filters, thin_margin: filters.thin_margin ? undefined : true })}>
+            under 20%
           </button>
         </div>
       </Group>
 
-      <Group label="5 · Lifecycle stage">
+      <Group label="8 · Last contact">
         <div className="popover-chips">
-          {["ready_for_onboarding", "onboarding", "adopting", "healthy", "renewal", "closed"].map((s) => (
-            <button key={s} type="button" className="chip" aria-pressed={filters.stages?.includes(s) ?? false} onClick={() => toggleIn("stages", s)}>
-              {s.replace(/_/g, " ")}
-            </button>
-          ))}
+          <button type="button" className="chip" aria-pressed={filters.no_contact ?? false}
+            onClick={() => onFilters({ ...filters, no_contact: filters.no_contact ? undefined : true })}>
+            past threshold
+          </button>
         </div>
       </Group>
 
-      <Group label="6 · Task status">
+      <Group label="9 · Stalled">
         <div className="popover-chips">
-          {["open", "done"].map((s) => (
-            <button key={s} type="button" className="chip" aria-pressed={filters.task_status === s}
-              onClick={() => onFilters({ ...filters, task_status: filters.task_status === s ? undefined : s })}>
-              {s}
-            </button>
-          ))}
-        </div>
-      </Group>
-
-      <Group label="7 · Last contact">
-        <div className="popover-chips">
-          {[14, 21, 30].map((d) => (
-            <button key={d} type="button" className="chip" aria-pressed={filters.last_contact_gt === d}
-              onClick={() => onFilters({ ...filters, last_contact_gt: filters.last_contact_gt === d ? undefined : d })}>
-              &gt; {d} days
-            </button>
-          ))}
-        </div>
-      </Group>
-
-      <Group label="8 · Priority">
-        <div className="popover-chips">
-          {["critical", "high", "normal"].map((p) => (
-            <button key={p} type="button" className="chip" aria-pressed={filters.priorities?.includes(p) ?? false} onClick={() => toggleIn("priorities", p)}>
-              {p}
-            </button>
-          ))}
-        </div>
-      </Group>
-
-      <Group label="9 · Segment">
-        <div className="popover-chips">
-          {["enterprise", "mid_market", "smb"].map((s) => (
-            <button key={s} type="button" className="chip" aria-pressed={filters.segments?.includes(s) ?? false} onClick={() => toggleIn("segments", s)}>
-              {s.replace("_", " ")}
-            </button>
-          ))}
+          <button type="button" className="chip" aria-pressed={filters.stalled_handoff ?? false}
+            onClick={() => onFilters({ ...filters, stalled_handoff: filters.stalled_handoff ? undefined : true })}>
+            handoff
+          </button>
+          <button type="button" className="chip" aria-pressed={filters.column_stalled ?? false}
+            onClick={() => onFilters({ ...filters, column_stalled: filters.column_stalled ? undefined : true })}>
+            in column
+          </button>
         </div>
       </Group>
 
@@ -275,13 +256,11 @@ export function MetricsStrip({ metrics, activeKey, onApply }: MetricsProps) {
           aria-pressed={activeKey === m.key}
           onClick={() => onApply(m)}
         >
-          <div className="metric-value">{m.format === "inr" ? inr(m.value) : m.value}</div>
-          <div className="metric-label">{m.label}</div>
-          <div className="metric-sub">
-            {m.sub_format === "inr_at_stake" && m.sub_value !== undefined
-              ? `${inr(m.sub_value)} ${m.sub}`
-              : m.sub}
+          <div className={`metric-value ${m.margin_band ? `text-${m.margin_band}` : ""}`}>
+            {m.format === "inr" ? formatINR(m.value) : m.value}
           </div>
+          <div className="metric-label">{m.label}</div>
+          <div className="metric-sub">{m.sub}</div>
         </button>
       ))}
     </div>
@@ -289,14 +268,15 @@ export function MetricsStrip({ metrics, activeKey, onApply }: MetricsProps) {
 }
 
 const QUICK_FILTERS: { key: string; label: string; patch: Filters }[] = [
-  { key: "mine", label: "Only my accounts", patch: {} },
+  { key: "pilot", label: "Pilot", patch: { modes: ["pilot"] } },
+  { key: "customer", label: "Customer", patch: { modes: ["customer"] } },
+  { key: "voice_only", label: "Voice AI only", patch: { client_types: ["voice_ai_only"] } },
+  { key: "data_voice", label: "Data + Voice AI", patch: { client_types: ["data_plus_voice_ai"] } },
+  { key: "bot", label: "Bot-Making", patch: { workstreams: ["bot_making"] } },
+  { key: "data_proc", label: "Data Procurement", patch: { workstreams: ["data_procurement"] } },
+  { key: "voice_calling", label: "Voice AI Calling", patch: { workstreams: ["voice_ai_calling"] } },
   { key: "at_risk", label: "At risk", patch: { bands: ["at_risk", "critical"] } },
-  { key: "renewals_30", label: "Renewals 30d", patch: { renewal_window: 30 } },
-  { key: "no_contact", label: "No contact 14d", patch: { last_contact_gt: 14 } },
-  { key: "overdue", label: "Overdue", patch: { overdue: true } },
-  { key: "onboarding", label: "Onboarding", patch: { stages: ["ready_for_onboarding", "onboarding"] } },
-  { key: "expansion", label: "Expansion", patch: { expansion: true } },
-  { key: "high_value", label: "High value", patch: { high_value: true } },
+  { key: "negative_margin", label: "Negative margin", patch: { negative_margin: true } },
 ];
 
 interface QuickFiltersProps {

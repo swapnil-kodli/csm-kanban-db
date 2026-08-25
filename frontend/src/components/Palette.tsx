@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { BoardView, HealthBand, SavedView, SearchResults } from "../lib/types";
+import type { HealthBand, SavedView } from "../lib/types";
 import { apiGet } from "../lib/api";
-import { inr } from "../lib/format";
+
+interface SearchResults {
+  accounts: { id: string; key: string; name: string; mode_label: string; workstream_label: string; health_score: number }[];
+  contacts: { id: string; name: string; role: string; account_id: string; account_name: string }[];
+  tasks: { id: string; title: string; type_label: string; account_id: string; account_name: string }[];
+  activities: { id: string; type: string; summary: string; account_id: string; account_name: string }[];
+}
 
 interface Command {
   id: string;
@@ -15,13 +21,12 @@ interface Props {
   savedViews: SavedView[];
   onClose: () => void;
   onOpenAccount: (accountId: string) => void;
-  onView: (v: BoardView) => void;
   onSavedView: (v: SavedView) => void;
   onNewTask: () => void;
   onLogActivity: () => void;
 }
 
-export function CommandPalette({ savedViews, onClose, onOpenAccount, onView, onSavedView, onNewTask, onLogActivity }: Props) {
+export function CommandPalette({ savedViews, onClose, onOpenAccount, onSavedView, onNewTask, onLogActivity }: Props) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResults | null>(null);
   const [active, setActive] = useState(0);
@@ -51,7 +56,7 @@ export function CommandPalette({ savedViews, onClose, onOpenAccount, onView, onS
         id: `acct-${a.id}`,
         group: "Go to account",
         title: a.name,
-        sub: `${a.key} · ${inr(a.arr)} · ${a.health_score}`,
+        sub: `${a.key} · ${a.mode_label} · ${a.workstream_label} · ${a.health_score}`,
         run: () => { onOpenAccount(a.id); onClose(); },
       })
     );
@@ -84,9 +89,6 @@ export function CommandPalette({ savedViews, onClose, onOpenAccount, onView, onS
     );
 
     const actions: Command[] = [
-      { id: "cmd-work", group: "Commands", title: "Switch view: My Work", run: () => { onView("work"); onClose(); } },
-      { id: "cmd-health", group: "Commands", title: "Switch view: Health", run: () => { onView("health"); onClose(); } },
-      { id: "cmd-lifecycle", group: "Commands", title: "Switch view: Lifecycle", run: () => { onView("lifecycle"); onClose(); } },
       { id: "cmd-task", group: "Commands", title: "New task", run: () => { onNewTask(); onClose(); } },
       { id: "cmd-log", group: "Commands", title: "Log activity on open account", run: () => { onLogActivity(); onClose(); } },
       ...savedViews.map((v) => ({
@@ -99,7 +101,7 @@ export function CommandPalette({ savedViews, onClose, onOpenAccount, onView, onS
 
     out.push(...actions.filter((a) => !q || a.title.toLowerCase().includes(q)));
     return out;
-  }, [results, query, savedViews, onOpenAccount, onClose, onView, onNewTask, onLogActivity, onSavedView]);
+  }, [results, query, savedViews, onOpenAccount, onClose, onNewTask, onLogActivity, onSavedView]);
 
   useEffect(() => { setActive(0); }, [query, results]);
 

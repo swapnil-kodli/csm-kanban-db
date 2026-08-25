@@ -119,7 +119,11 @@ def score_account(ctx: BookContext, account: Account) -> dict:
     margin_w = 15.0 if margin_pct is not None and margin_pct < pnl_engine.MARGIN_AMBER else 0.0
 
     stalled_w = (
-        10.0 if days_in_column is not None and days_in_column > STALLED_COLUMN_DAYS else 0.0
+        10.0
+        if account.column != "launch"
+        and days_in_column is not None
+        and days_in_column > STALLED_COLUMN_DAYS
+        else 0.0
     )
     escalation_w = float(min(20, 12 * ctx.open_high_risks.get(account.id, 0)))
     neglect_w = (

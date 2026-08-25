@@ -363,9 +363,13 @@ input, select, textarea { font: inherit; color: inherit; }
 }
 .attention-strip.calm { background: var(--surface-2); color: var(--text-2); }
 
-.drawer-body { flex: 1; min-height: 0; display: flex; overflow: hidden; }
-.drawer-main { flex: 0 0 60%; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
-.drawer-side { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; padding: 16px 20px 28px; display: flex; flex-direction: column; gap: 22px; }
+/* v2: one scrolling column of panels. The v1 60/40 split assumed a fixed
+   two-column record; the v2 drawer is a configurable stack. */
+.drawer-body {
+  flex: 1; min-height: 0; display: block;
+  overflow-y: auto; overflow-x: hidden;
+  padding: 4px 22px 32px;
+}
 
 .drawer-tabs { display: flex; gap: 4px; padding: 12px 20px 0; flex-shrink: 0; }
 .drawer-tab {
@@ -519,3 +523,163 @@ input, select, textarea { font: inherit; color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* ============================================================
+   v2 — delivery board
+   Card carries exactly four things. Health stays the only
+   saturated channel; mode and workstream are monochrome.
+   ============================================================ */
+
+.card-account { display: flex; flex-direction: column; gap: 7px; }
+
+.card-mode { display: flex; gap: 6px; align-items: center; }
+
+/* PILOT = outlined amber, CUSTOMER = solid dark. */
+.chip-pilot {
+  border: 1px solid var(--h-watch);
+  color: var(--na-text);
+  background: var(--na-bg);
+}
+.chip-customer {
+  border: 1px solid var(--text);
+  background: var(--text);
+  color: #fff;
+}
+.chip-handoff { border: 1px solid var(--text); color: var(--text); background: transparent; }
+.chip-grey { border: 1px solid var(--border-strong); color: var(--text-2); background: var(--surface-2); }
+.chip-type { border: 1px solid var(--border-strong); color: var(--text-2); background: transparent; }
+.chip-toggle { cursor: pointer; border: 1px solid var(--border-strong); background: transparent; color: var(--text-2); }
+.chip-on { border-color: var(--text); background: var(--accent-soft); color: var(--text); }
+
+.card-workstream { display: flex; align-items: center; gap: 7px; }
+.ws-glyph { font-size: 13px; color: var(--text-2); line-height: 1; }
+.ws-label { font-size: 12px; color: var(--text-2); }
+
+/* Health is never colour-only: band word + numeric score, always. */
+.card-health { display: flex; align-items: baseline; gap: 6px; margin-top: 2px; }
+.health-word { font-size: 13px; font-weight: 700; letter-spacing: -0.2px; }
+.health-sep { color: var(--text-3); }
+.health-score { font-size: 21px; font-weight: 800; letter-spacing: -0.6px; }
+.health-override-mark { font-size: 11px; color: var(--text-3); margin-left: 2px; }
+
+.card-handoff { border-left: 2px dashed var(--s-handoff); }
+.card-stalled { border-left: 2px solid var(--h-critical); }
+.card-stalled-note { font-size: 10.5px; font-weight: 700; letter-spacing: 0.4px;
+  text-transform: uppercase; color: var(--h-critical); margin-top: 2px; }
+.card-selected { box-shadow: 0 0 0 2px var(--accent); }
+.card-dragging { opacity: 0.4; }
+.card-drag-ghost { width: 300px; box-shadow: var(--shadow-md); }
+
+.col-total { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--text-3); }
+.col-empty { font-size: 12px; color: var(--text-3); padding: 6px 4px; }
+.col-handoff { outline: 1px dashed var(--border-strong); outline-offset: -4px; border-radius: var(--radius); }
+
+.lane { display: flex; flex-direction: column; min-height: 0; }
+.lane-total { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--text-3); }
+
+/* --- drawer panels ----------------------------------------- */
+.panel { border-bottom: 1px solid var(--border); padding: 16px 0; }
+.panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.panel-head h3 { font-size: 15px; font-weight: 700; }
+.panel-muted { font-size: 12.5px; color: var(--text-3); }
+.panel-error { font-size: 12.5px; color: var(--h-critical); display: flex; gap: 10px;
+  align-items: center; background: #fff5f6; border: 1px solid var(--h-critical);
+  border-radius: var(--radius-sm); padding: 9px 11px; }
+
+.field { display: flex; align-items: center; gap: 12px; padding: 5px 0; }
+.field-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.8px;
+  text-transform: uppercase; color: var(--text-3); min-width: 120px; }
+.field-value { flex: 1; }
+.field-value input, .field-value select, .field-value textarea {
+  width: 100%; font: inherit; font-size: 12.5px; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface);
+}
+.field-value textarea { min-height: 54px; resize: vertical; }
+
+.chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.health-readout { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.health-big { font-size: 28px; font-weight: 800; letter-spacing: -1px; }
+.components { display: flex; flex-direction: column; gap: 5px; margin: 10px 0; }
+.component { display: flex; align-items: center; gap: 8px; font-size: 11.5px; }
+.component-name { min-width: 84px; color: var(--text-2); text-transform: capitalize; }
+.component-bar { flex: 1; height: 4px; background: var(--surface-2); border-radius: 2px; overflow: hidden; }
+.component-bar span { display: block; height: 100%; background: var(--text-2); }
+.component-value { min-width: 24px; text-align: right; color: var(--text-2); }
+.override-note { font-size: 12px; color: var(--text-2); margin: 8px 0;
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.override-form { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.override-form input { flex: 1; min-width: 160px; font-size: 12.5px; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); }
+
+.line-items { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; }
+.line-items li { display: flex; gap: 10px; font-size: 12.5px; color: var(--text-2); }
+.li-calc { color: var(--text-3); }
+.li-total { margin-left: auto; font-weight: 600; color: var(--text); }
+.quote-notes { font-size: 12px; color: var(--text-2); margin-top: 6px; }
+
+.pnl-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 8px 0; }
+.pnl-grid > div { display: flex; flex-direction: column; gap: 2px; }
+.pnl-grid strong { font-size: 15px; font-weight: 800; letter-spacing: -0.4px; }
+
+.thread-list { display: flex; flex-direction: column; gap: 8px; }
+.thread { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 9px 11px; }
+.thread.unread { border-color: var(--border-strong); }
+.thread-head { display: flex; gap: 8px; width: 100%; background: none;
+  border: 0; cursor: pointer; text-align: left; font: inherit; align-items: baseline; }
+.thread-subject { font-size: 12.5px; font-weight: 600; flex: 1; }
+.thread-count, .thread-date { font-size: 11px; color: var(--text-3); }
+.thread-snippet { font-size: 12px; color: var(--text-3); margin-top: 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.thread-detail { margin-top: 8px; display: flex; gap: 10px; align-items: center; }
+.thread-participants { font-size: 11.5px; color: var(--text-2); flex: 1; }
+
+.task-row { display: flex; gap: 9px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.task-row:last-child { border-bottom: 0; }
+.task-overdue { border-left: 2px solid var(--h-critical); padding-left: 8px; }
+.task-check { width: 16px; height: 16px; border: 1px solid var(--border-strong);
+  border-radius: 4px; background: var(--surface); cursor: pointer; flex-shrink: 0;
+  font-size: 11px; line-height: 1; }
+.task-title { font-size: 12.5px; font-weight: 600; }
+.task-done { text-decoration: line-through; color: var(--text-3); }
+.task-meta { display: flex; gap: 8px; align-items: center; margin-top: 3px; }
+.task-due { font-size: 11.5px; color: var(--text-3); }
+.task-due-late { font-size: 11.5px; color: var(--h-critical); font-weight: 600; }
+.task-provenance { font-size: 11.5px; color: var(--na-text); margin-top: 3px; }
+.task-body { flex: 1; }
+
+.terms { display: flex; flex-direction: column; gap: 4px; }
+.terms li { display: flex; gap: 10px; font-size: 12px; color: var(--text-2); }
+.term-detail { color: var(--text-3); flex: 1; }
+.term-value { font-weight: 700; color: var(--text); }
+
+.attention-strip { display: flex; gap: 14px; font-size: 12px; color: var(--h-critical);
+  padding: 8px 0 0; }
+.drawer-title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.composer { display: flex; gap: 6px; margin-bottom: 6px; }
+.composer input { flex: 1; font-size: 12.5px; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.composer-toggle { display: flex; gap: 6px; align-items: center;
+  font-size: 12px; color: var(--text-2); }
+.composer-task { width: 100%; margin-top: 6px; font-size: 12.5px; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); }
+
+/* health + margin colour ramp share one token set */
+.text-h-healthy { color: var(--h-healthy); }
+.text-h-watch { color: var(--h-watch); }
+.text-h-risk { color: var(--h-risk); }
+.text-h-critical { color: var(--h-critical); }
+.text-text-3 { color: var(--text-3); }
+
+/* Health / stage / priority dots, coloured by token name. */
+.dot-h-healthy  { background: var(--h-healthy); }
+.dot-h-watch    { background: var(--h-watch); }
+.dot-h-risk     { background: var(--h-risk); }
+.dot-h-critical { background: var(--h-critical); }
+.dot-s-handoff    { background: var(--s-handoff); }
+.dot-s-onboarding { background: var(--s-onboarding); }
+.dot-s-adopting   { background: var(--s-adopting); }
+.dot-s-renewal    { background: var(--s-renewal); }
+.dot-s-healthy    { background: var(--s-healthy); }
+.dot-text-3       { background: var(--text-3); }
+.col-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }

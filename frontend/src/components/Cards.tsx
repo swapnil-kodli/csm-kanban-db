@@ -1,196 +1,130 @@
 import { useDraggable } from "@dnd-kit/core";
-import { AlertTriangle, Plus, Zap } from "lucide-react";
-import type { AccountCard as AccountCardT, Badge, Card, TaskCard as TaskCardT } from "../lib/types";
-import { contactLabel, dueLabel, inr, velocityGlyph } from "../lib/format";
+import type { AccountCard, TaskCard } from "../lib/types";
 
-const MAX_BADGES = 3;
-
-function Badges({ badges }: { badges: Badge[] }) {
-  if (!badges.length) return null;
-  const shown = badges.slice(0, MAX_BADGES);
-  const extra = badges.length - shown.length;
-  return (
-    <div className="badges">
-      {shown.map((b) => (
-        <span key={b.key} className={`badge badge-${b.variant}`}>
-          {b.label}
-        </span>
-      ))}
-      {extra > 0 && <span className="badge badge-more">+{extra}</span>}
-    </div>
-  );
-}
-
-interface DragProps {
-  id: string;
-  disabled?: boolean;
-}
-
-function useCardDrag({ id, disabled }: DragProps) {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id, disabled });
-  return { attributes, listeners, setNodeRef, isDragging };
-}
-
-interface AccountCardProps {
-  card: AccountCardT;
+/**
+ * The v2 card carries exactly four things:
+ *   1. name (+ key)   2. pilot/customer   3. workstream   4. health status
+ *
+ * Nothing else belongs here. Quoted value, margin, POC, renewal, next action,
+ * badges — all of it lives in the drawer. An over-stuffed card stops being
+ * scannable, which is the failure mode the research is most emphatic about.
+ * Resist adding a fifth thing.
+ */
+export function AccountCardView({
+  card,
+  selected,
+  onOpen,
+}: {
+  card: AccountCard;
   selected: boolean;
-  onOpen: (accountId: string) => void;
-  onSetNextAction: (accountId: string) => void;
-}
+  onOpen: (id: string) => void;
+}) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+    id: card.id,
+    data: { kind: "account", column: card.column },
+  });
 
-export function AccountCardView({ card, selected, onOpen, onSetNextAction }: AccountCardProps) {
-  const { attributes, listeners, setNodeRef, isDragging } = useCardDrag({ id: card.id });
-  const vel = velocityGlyph(card.velocity);
-  const isHandoff = card.lifecycle_stage === "ready_for_onboarding";
+  const classes = [
+    "card",
+    "card-account",
+    card.handoff ? "card-handoff" : "",
+    card.stalled_handoff || card.column_stalled ? "card-stalled" : "",
+    selected ? "card-selected" : "",
+    isDragging ? "card-dragging" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   return (
-    <div
+    <article
       ref={setNodeRef}
-      {...listeners}
+      className={classes}
       {...attributes}
+      {...listeners}
       role="button"
       tabIndex={0}
-      data-card-id={card.id}
-      aria-label={`${card.name}, health ${card.health_score} ${card.health_band_label}, ${inr(card.arr)} ARR`}
-      className={`card${isDragging ? " dragging" : ""}${selected ? " selected" : ""}${isHandoff ? " handoff" : ""}`}
+      aria-label={`${card.name}, ${card.mode_label}, ${card.workstream_label}, health ${card.health_band_label} ${card.health_score}`}
       onClick={() => onOpen(card.account_id)}
       onKeyDown={(e) => {
-        if (e.key === "Enter") {
+        if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           onOpen(card.account_id);
         }
       }}
     >
-      <div className="card-head">
-        <span className="health-dot" style={{ background: `var(--${card.health_dot})` }} />
-        <span className="card-title">{card.name}</span>
+      {/* 1. health dot + name + key */}
+      <header className="card-head">
+        <span className={`health-dot dot-${card.health_dot}`} aria-hidden="true" />
+        <h3 className="card-title">{card.name}</h3>
         <span className="card-key">{card.key}</span>
-      </div>
-      <div className="card-sub">
-        {card.segment_label}
-        {card.city ? ` · ${card.city}` : ""}
+      </header>
+
+      {/* 2. pilot / customer */}
+      <div className="card-mode">
+        <span className={`chip chip-${card.mode}`}>{card.mode_label.toUpperCase()}</span>
+        {card.handoff && <span className="chip chip-handoff">HANDOFF</span>}
       </div>
 
-      <div className="card-value-row">
-        {card.arr ? (
-          <span className="card-value">{inr(card.arr)}</span>
-        ) : (
-          <span className="card-value empty">No ARR set</span>
-        )}
-        <span className="health-readout">
-          <span
-            className="health-ring"
-            style={{
-              background: `var(--${card.health_dot})`,
-              boxShadow: `0 0 0 3px color-mix(in srgb, var(--${card.health_dot}) 18%, transparent)`,
-            }}
-          />
-          <span className="health-score">{card.health_score}</span>
-          <span className={`velocity ${vel.cls}`} title={vel.label}>
-            {vel.glyph}
-            {card.velocity ? Math.abs(card.velocity) : ""}
+      {/* 3. workstream — the other axis: what the team is doing right now */}
+      <div className="card-workstream">
+        <span className="ws-glyph" aria-hidden="true">
+          {card.workstream_glyph}
+        </span>
+        <span className="ws-label">{card.workstream_label}</span>
+      </div>
+
+      {/* 4. health status — never colour alone, always band word + score */}
+      <div className="card-health">
+        <span className={`health-word text-${card.health_dot}`}>{card.health_band_label}</span>
+        <span className="health-sep">·</span>
+        <span className="health-score">{card.health_score}</span>
+        {card.is_overridden && (
+          <span className="health-override-mark" title="Manual override">
+            ✎
           </span>
-        </span>
+        )}
       </div>
 
-      <Badges badges={card.badges} />
-
-      {card.next_action ? (
-        <div className="next-step">
-          <Zap size={13} strokeWidth={2.2} />
-          <span>{card.next_action.title}</span>
-        </div>
-      ) : (
-        <button
-          type="button"
-          className="next-step empty"
-          onClick={(e) => {
-            e.stopPropagation();
-            onSetNextAction(card.account_id);
-          }}
-        >
-          <Plus size={13} strokeWidth={2.2} />
-          <span>Set next action</span>
-        </button>
+      {(card.stalled_handoff || card.column_stalled) && (
+        <p className="card-stalled-note">
+          {card.stalled_handoff ? "Stalled handoff" : "Stalled in column"}
+        </p>
       )}
-
-      <div className="card-foot">
-        <span>{contactLabel(card.days_since_contact)}</span>
-        <span className="stage-tag">
-          <span className="stage-dot" style={{ background: `var(--${card.lifecycle_dot})` }} />
-          {card.lifecycle_label}
-        </span>
-      </div>
-    </div>
+    </article>
   );
 }
 
-interface TaskCardProps {
-  card: TaskCardT;
-  selected: boolean;
-  onOpen: (accountId: string) => void;
-}
-
-export function TaskCardView({ card, selected, onOpen }: TaskCardProps) {
-  const { attributes, listeners, setNodeRef, isDragging } = useCardDrag({ id: card.id });
-  const done = card.status === "done";
-
+/** Task cards no longer drive columns; they render inside the drawer. */
+export function TaskRow({
+  task,
+  onToggle,
+}: {
+  task: TaskCard;
+  onToggle: (task: TaskCard) => void;
+}) {
   return (
-    <div
-      ref={setNodeRef}
-      {...listeners}
-      {...attributes}
-      role="button"
-      tabIndex={0}
-      data-card-id={card.id}
-      aria-label={`${card.title}, ${card.account.name}, ${dueLabel(card.days_until_due, card.overdue, card.overdue_days)}`}
-      className={`card${isDragging ? " dragging" : ""}${selected ? " selected" : ""}${card.overdue ? " overdue-task" : ""}${done ? " task-done" : ""}`}
-      onClick={() => onOpen(card.account_id)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          onOpen(card.account_id);
-        }
-      }}
-    >
-      <div className="card-head">
-        <span className="priority-dot" style={{ background: `var(--p-${card.priority})` }} />
-        <span className="card-title">{card.title}</span>
-      </div>
-      <div className="card-sub">
-        {card.account.name} · <span style={{ fontFamily: "ui-monospace, monospace" }}>{card.account.key}</span>
-      </div>
-
-      <div className="task-meta">
-        <span className="type-chip">{card.type_label}</span>
-        <span className={`due${card.overdue ? " is-overdue" : ""}`}>
-          {done && card.completed_at
-            ? "Completed"
-            : dueLabel(card.days_until_due, card.overdue, card.overdue_days)}
-        </span>
-      </div>
-
-      {card.provenance && (
-        <div className="provenance">
-          <AlertTriangle size={12} strokeWidth={2.2} />
-          <span>{card.provenance}</span>
+    <div className={`task-row ${task.overdue ? "task-overdue" : ""}`}>
+      <button
+        className="task-check"
+        aria-label={task.status === "done" ? "Reopen task" : "Complete task"}
+        onClick={() => onToggle(task)}
+      >
+        {task.status === "done" ? "✓" : ""}
+      </button>
+      <div className="task-body">
+        <p className={`task-title ${task.status === "done" ? "task-done" : ""}`}>{task.title}</p>
+        <div className="task-meta">
+          <span className={`chip chip-type`}>{task.type_label}</span>
+          <span className={task.overdue ? "task-due-late" : "task-due"}>
+            {task.overdue
+              ? `Overdue by ${task.overdue_days}d`
+              : task.days_until_due === 0
+                ? "Due today"
+                : `Due in ${task.days_until_due}d`}
+          </span>
         </div>
-      )}
+        {task.provenance && <p className="task-provenance">⚠ {task.provenance}</p>}
+      </div>
     </div>
-  );
-}
-
-interface CardViewProps {
-  card: Card;
-  selected: boolean;
-  onOpen: (accountId: string) => void;
-  onSetNextAction: (accountId: string) => void;
-}
-
-export function CardView({ card, selected, onOpen, onSetNextAction }: CardViewProps) {
-  return card.kind === "task" ? (
-    <TaskCardView card={card} selected={selected} onOpen={onOpen} />
-  ) : (
-    <AccountCardView card={card} selected={selected} onOpen={onOpen} onSetNextAction={onSetNextAction} />
   );
 }
