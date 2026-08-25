@@ -23,7 +23,6 @@ from routers import (
     metrics,
     search,
     tasks,
-    views,
 )
 
 APP_VERSION = os.getenv("APP_VERSION", "1.0.0")
@@ -107,7 +106,6 @@ api.include_router(accounts.router)
 api.include_router(tasks.router)
 api.include_router(activities.router)
 api.include_router(contacts.router)
-api.include_router(views.router)
 api.include_router(search.router)
 api.include_router(metrics.router)
 api.include_router(google.router)

@@ -4,11 +4,11 @@ A narrow configuration surface on purpose. Every destructive action requires a
 target, and every refusal names the constraint it is protecting — one refusal
 idiom across the whole config surface.
 
-Saved views store the immutable `key`, so a rename is always safe. A delete or
-an archive is not: the clause would point at a key that no longer appears on the
-board and the view would silently return nothing. Both paths sweep saved views,
-and both report what they touched *before* the change is applied so the operator
-is choosing rather than reading a receipt.
+Filter state is ephemeral — quick filters, swimlanes and the URL query string —
+so nothing persistent references a column key and a delete has no stored objects
+to repair. What it does have is cards, and the confirm dialog reports where they
+are going *before* the change is applied, so the operator is choosing rather than
+reading a receipt.
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
 from db import get_session
-from models import Account, BoardColumn, COLUMN_PALETTE, SavedView
+from models import Account, BoardColumn, COLUMN_PALETTE
 from schemas import ColumnCreate, ColumnDelete, ColumnPatch, ColumnReorder
 
 router = APIRouter(prefix="/columns", tags=["columns"])
@@ -61,35 +61,6 @@ def _get(session: Session, column_id: str) -> BoardColumn:
     if column is None:
         raise HTTPException(status_code=404, detail="Column not found")
     return column
-
-
-def _views_referencing(session: Session, key: str) -> list[SavedView]:
-    return [
-        v
-        for v in session.exec(select(SavedView)).all()
-        if key in ((v.filter_json or {}).get("columns") or [])
-    ]
-
-
-def _rewrite_views(
-    session: Session, from_key: str, to_key: Optional[str]
-) -> list[str]:
-    """Repoint or strip saved-view clauses naming a key that is going away."""
-    touched: list[str] = []
-    for view in _views_referencing(session, from_key):
-        filters = dict(view.filter_json or {})
-        keys = [k for k in filters.get("columns", []) if k != from_key]
-        if to_key and to_key not in keys:
-            keys.append(to_key)
-        if keys:
-            filters["columns"] = keys
-        else:
-            filters.pop("columns", None)
-        view.filter_json = filters
-        view.updated_at = datetime.utcnow()
-        session.add(view)
-        touched.append(view.name)
-    return touched
 
 
 @router.get("")
@@ -166,7 +137,6 @@ def delete_impact(column_id: str, session: Session = Depends(get_session)):
     column = _get(session, column_id)
     return {
         "card_count": _counts(session).get(column.id, 0),
-        "saved_views": [v.name for v in _views_referencing(session, column.key)],
         "is_default_entry": column.is_default_entry,
     }
 
@@ -207,7 +177,6 @@ def patch_column(
     column = _get(session, column_id)
     data = payload.model_dump(exclude_unset=True)
     counts = _counts(session)
-    saved_views_updated: list[str] = []
 
     if data.get("color") and data["color"] not in COLUMN_PALETTE:
         raise HTTPException(status_code=422, detail="Colour must come from the token palette")
@@ -229,10 +198,6 @@ def patch_column(
                     "Move them out before archiving."
                 ),
             )
-        # An archived column vanishes from the board, so a view filtering on it
-        # would silently return nothing. Strip the clause and say so.
-        saved_views_updated = _rewrite_views(session, column.key, None)
-
     if data.get("is_default_entry"):
         if column.is_archived:
             raise HTTPException(
@@ -263,7 +228,7 @@ def patch_column(
     session.add(column)
     session.commit()
     session.refresh(column)
-    return {"column": _out(column, counts.get(column.id, 0)), "saved_views_updated": saved_views_updated}
+    return {"column": _out(column, counts.get(column.id, 0))}
 
 
 @router.post("/reorder")
@@ -326,12 +291,11 @@ def delete_column(
             account.updated_at = datetime.utcnow()
             session.add(account)
 
-    saved_views_updated = _rewrite_views(session, column.key, target.key if target else None)
     session.delete(column)
     session.commit()
     return {
         "deleted": column.key,
         "reassigned": held,
         "reassigned_to": target.key if target else None,
-        "saved_views_updated": saved_views_updated,
+        "reassigned_to_label": target.label if target else None,
     }

@@ -232,18 +232,18 @@ export function Settings({ onChanged }: { onChanged: () => void }) {
             <h3>Delete “{confirmDelete.column.label}”?</h3>
             {/* Blast radius up front, so this is a decision and not a receipt. */}
             <p className="dialog-impact">
-              This will move <strong>{confirmDelete.impact.card_count}</strong> card
-              {confirmDelete.impact.card_count === 1 ? "" : "s"}
-              {confirmDelete.impact.saved_views.length > 0 && (
+              {confirmDelete.impact.card_count > 0 ? (
                 <>
-                  {" "}
-                  and update <strong>{confirmDelete.impact.saved_views.length}</strong> saved
-                  view
-                  {confirmDelete.impact.saved_views.length === 1 ? "" : "s"} (
-                  {confirmDelete.impact.saved_views.join(", ")})
+                  This will move <strong>{confirmDelete.impact.card_count}</strong> card
+                  {confirmDelete.impact.card_count === 1 ? "" : "s"} to{" "}
+                  <strong>
+                    {columns.find((c) => c.id === confirmDelete.target)?.label ?? "another column"}
+                  </strong>
+                  .
                 </>
+              ) : (
+                <>This column is empty — nothing will be moved.</>
               )}
-              .
             </p>
             {confirmDelete.impact.card_count > 0 && (
               <label className="field">

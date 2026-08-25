@@ -17,7 +17,6 @@ export interface ColumnConfig {
 
 export interface ColumnImpact {
   card_count: number;
-  saved_views: string[];
   is_default_entry: boolean;
 }
 export type Workstream = "bot_making" | "data_procurement" | "voice_ai_calling";
@@ -270,13 +269,10 @@ export interface AccountDetail {
   usage: { date: string; active_users: number; sessions: number; feature_adoption_pct: number }[];
 }
 
-export interface SavedView {
-  id: string;
-  name: string;
-  filter_json: Record<string, unknown>;
-  pinned: boolean;
-}
-
+/**
+ * Board filter state. Ephemeral by design — held in the URL query string so a
+ * filtered board stays shareable, never persisted as a stored object.
+ */
 export interface Filters {
   bands?: string[];
   modes?: string[];

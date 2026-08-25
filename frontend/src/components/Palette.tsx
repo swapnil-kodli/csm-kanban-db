@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { HealthBand, SavedView } from "../lib/types";
+import type { HealthBand } from "../lib/types";
 import { apiGet } from "../lib/api";
 
 interface SearchResults {
@@ -18,15 +18,13 @@ interface Command {
 }
 
 interface Props {
-  savedViews: SavedView[];
   onClose: () => void;
   onOpenAccount: (accountId: string) => void;
-  onSavedView: (v: SavedView) => void;
   onNewTask: () => void;
   onLogActivity: () => void;
 }
 
-export function CommandPalette({ savedViews, onClose, onOpenAccount, onSavedView, onNewTask, onLogActivity }: Props) {
+export function CommandPalette({ onClose, onOpenAccount, onNewTask, onLogActivity }: Props) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResults | null>(null);
   const [active, setActive] = useState(0);
@@ -91,17 +89,11 @@ export function CommandPalette({ savedViews, onClose, onOpenAccount, onSavedView
     const actions: Command[] = [
       { id: "cmd-task", group: "Commands", title: "New task", run: () => { onNewTask(); onClose(); } },
       { id: "cmd-log", group: "Commands", title: "Log activity on open account", run: () => { onLogActivity(); onClose(); } },
-      ...savedViews.map((v) => ({
-        id: `sv-${v.id}`,
-        group: "Saved views",
-        title: `Apply view: ${v.name}`,
-        run: () => { onSavedView(v); onClose(); },
-      })),
     ];
 
     out.push(...actions.filter((a) => !q || a.title.toLowerCase().includes(q)));
     return out;
-  }, [results, query, savedViews, onOpenAccount, onClose, onNewTask, onLogActivity, onSavedView]);
+  }, [results, query, onOpenAccount, onClose, onNewTask, onLogActivity]);
 
   useEffect(() => { setActive(0); }, [query, results]);
 

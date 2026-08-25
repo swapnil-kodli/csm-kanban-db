@@ -131,14 +131,6 @@ class ContactPatch(BaseModel):
     status: Optional[Literal["active", "departed"]] = None
 
 
-class SavedViewCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=80)
-    filter_json: dict[str, Any] = Field(default_factory=dict)
-    pinned: bool = False
-
-
-# --- v3a: board column configuration ----------------------------------------
-
 class ColumnCreate(BaseModel):
     label: str = Field(min_length=1, max_length=60)
     color: Optional[str] = None

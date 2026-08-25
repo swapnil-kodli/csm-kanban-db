@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import type {
   AccountCard, AccountDetail, BoardResponse, ColumnConfig, Filters, GroupBy,
-  HealthBand, Metric, SavedView, TaskBucket,
+  HealthBand, Metric, TaskBucket,
 } from "./lib/types";
 import { apiDelete, apiGet, apiPatch, apiPost, getSource, onSourceChange, qs } from "./lib/api";
 import type { SourceState } from "./lib/api";
@@ -54,6 +54,23 @@ export default function App() {
     setColumnConfig(d.columns);
   }, []);
 
+  /**
+   * Keep a trailing slash on the mount path.
+   *
+   * React Router collapses `basename` + "/" to the bare `/p/{slug}`, and on
+   * that URL a relative asset resolves one level up — /p/assets/... — which the
+   * SPA fallback answers with 200 text/html, so the browser rejects the module
+   * and the page comes back blank. nginx redirects the bare form, so a shared
+   * link recovers either way; this keeps the URL in the address bar correct in
+   * the first place, so the copied link never depends on that redirect.
+   */
+  useEffect(() => {
+    const { pathname, search, hash } = window.location;
+    if (/^\/p\/[^/]+$/.test(pathname)) {
+      window.history.replaceState(null, "", `${pathname}/${search}${hash}`);
+    }
+  });
+
   const toggleLane = useCallback((key: string) => {
     setCollapsedLanes((prev) => {
       const next = new Set(prev);
@@ -65,10 +82,8 @@ export default function App() {
 
   const [board, setBoard] = useState<BoardResponse | null>(null);
   const [metrics, setMetrics] = useState<Metric[]>([]);
-  const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [user, setUser] = useState<{ name: string; initials: string; avatar_color: string } | null>(null);
   const [activeMetric, setActiveMetric] = useState<string | null>(null);
-  const [activeSavedView, setActiveSavedView] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [fatal, setFatal] = useState<string | null>(null);
@@ -131,14 +146,12 @@ export default function App() {
     (async () => {
       setLoading(true);
       try {
-        const [, , views, me] = await Promise.all([
+        const [, , me] = await Promise.all([
           loadBoard(),
           loadMetrics(),
-          apiGet<{ views: SavedView[] }>("/saved-views"),
           apiGet<{ user: typeof user }>("/me"),
         ]);
         if (cancelled) return;
-        setSavedViews(views.views);
         await loadColumns();
         setUser(me.user);
         setFatal(null);
@@ -267,16 +280,9 @@ export default function App() {
   function applyMetric(m: Metric) {
     if (activeMetric === m.key) { setActiveMetric(null); setFilters({}); return; }
     setActiveMetric(m.key);
-    setActiveSavedView(null);
     setFilters(m.filters);
   }
 
-  function applySavedView(v: SavedView | null) {
-    setActiveMetric(null);
-    if (!v) { setActiveSavedView(null); setFilters({}); return; }
-    setActiveSavedView(v.id);
-    setFilters(v.filter_json);
-  }
 
   // --- keyboard -------------------------------------------------------------
   const visibleCards = useMemo(() => (board ? board.columns.flatMap((c) => c.cards) : []), [board]);
@@ -351,7 +357,7 @@ export default function App() {
         filters={filters}
         searchRef={searchRef}
         onGroupBy={setGroupBy}
-        onFilters={(f) => { setActiveMetric(null); setActiveSavedView(null); setFilters(f); }}
+        onFilters={(f) => { setActiveMetric(null); setFilters(f); }}
         onOpenPalette={() => { setPaletteOpen(true); searchRef.current?.blur(); }}
         onNewTask={() => setNewTaskFor(openAccountId ?? visibleCards[0]?.account_id ?? null)}
       />
@@ -371,10 +377,7 @@ export default function App() {
 
       <QuickFilters
         filters={filters}
-        savedViews={savedViews}
-        activeView={activeSavedView}
-        onFilters={(f) => { setActiveMetric(null); setActiveSavedView(null); setFilters(f); }}
-        onSavedView={applySavedView}
+        onFilters={(f) => { setActiveMetric(null); setFilters(f); }}
       />
 
       {loading && !board && <BoardSkeleton />}
@@ -394,7 +397,7 @@ export default function App() {
           <div className="empty-state">
             <h2>Nothing matches these filters</h2>
             <p>Clear a filter chip or pick a different saved view to bring the book back.</p>
-            <button type="button" className="btn" onClick={() => { setFilters({}); setActiveMetric(null); setActiveSavedView(null); }}>
+            <button type="button" className="btn" onClick={() => { setFilters({}); setActiveMetric(null); }}>
               Clear filters
             </button>
           </div>
@@ -454,11 +457,9 @@ export default function App() {
 
       {paletteOpen && (
         <CommandPalette
-          savedViews={savedViews}
-          onClose={() => setPaletteOpen(false)}
+            onClose={() => setPaletteOpen(false)}
           onOpenAccount={openAccount}
-            onSavedView={applySavedView}
-          onNewTask={() => setNewTaskFor(openAccountId ?? visibleCards[0]?.account_id ?? null)}
+              onNewTask={() => setNewTaskFor(openAccountId ?? visibleCards[0]?.account_id ?? null)}
           onLogActivity={() => composerRef.current?.focus()}
         />
       )}

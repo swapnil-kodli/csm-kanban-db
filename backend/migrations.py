@@ -26,6 +26,7 @@ import json
 import logging
 import uuid
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import text
 from sqlmodel import Session
@@ -101,6 +102,10 @@ DROPPED_TABLES = ["subscription", "milestone"]
 #
 # 3 and 14 reproduce v2 exactly; Launch carries NULL so the badge never fires
 # there, which is what the v2 Launch exclusion did.
+#
+# Saved views are removed as a feature in this same step, so a v1 or v2 database
+# carrying a populated `savedview` table has it dropped here rather than left
+# behind as an orphan no code reads.
 V3_COLUMNS = [
     # key, label, colour, position, entry?, stalled_after_days, description
     ("ready_for_onboarding", "Ready for Onboarding", "#9d50dd", 1.0, True, 3,
@@ -167,7 +172,26 @@ def migrate(session: Session) -> dict:
     v3 = _migrate_v2_to_v3(session)
     if v3.get("migrated"):
         result = {**result, "v3": v3}
+    dropped = _drop_saved_views(session)
+    if dropped is not None:
+        result = {**result, "saved_views_dropped": dropped}
     return result
+
+
+def _drop_saved_views(session: Session) -> Optional[int]:
+    """Saved views were removed as a feature; do not strand the table.
+
+    Deliberately not gated on the v2 -> v3 trigger. A database migrated by an
+    earlier build would already be past that branch and would keep the table
+    forever, which is exactly the orphan this is meant to prevent.
+    """
+    if "savedview" not in _table_names(session):
+        return None
+    count = session.exec(text("SELECT count(*) FROM savedview")).first()[0]
+    session.exec(text("DROP TABLE savedview"))
+    session.commit()
+    log.warning("Dropped the savedview table (%d row(s)) — feature removed", count)
+    return count
 
 
 def _migrate_v2_to_v3(session: Session) -> dict:

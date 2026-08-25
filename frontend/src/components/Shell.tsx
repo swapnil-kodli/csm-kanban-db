@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Search, SlidersHorizontal, Plus, AlertTriangle, X, Settings as Gear } from "lucide-react";
 import { Link } from "react-router-dom";
-import type { Filters, GroupBy, Metric, SavedView } from "../lib/types";
+import type { Filters, GroupBy, Metric } from "../lib/types";
 import { formatINR } from "../lib/format";
 
 // One board now. The v1 three-view toggle is gone: health became a card
@@ -286,16 +286,10 @@ const QUICK_FILTERS: { key: string; label: string; patch: Filters }[] = [
 
 interface QuickFiltersProps {
   filters: Filters;
-  savedViews: SavedView[];
-  activeView: string | null;
   onFilters: (f: Filters) => void;
-  onSavedView: (v: SavedView | null) => void;
 }
 
-export function QuickFilters({ filters, savedViews, activeView, onFilters, onSavedView }: QuickFiltersProps) {
-  const pinned = savedViews.filter((v) => v.pinned);
-  const rest = savedViews.filter((v) => !v.pinned);
-  const [showAll, setShowAll] = useState(false);
+export function QuickFilters({ filters, onFilters }: QuickFiltersProps) {
 
   function isActive(patch: Filters): boolean {
     return Object.entries(patch).every(([k, v]) => {
@@ -315,24 +309,8 @@ export function QuickFilters({ filters, savedViews, activeView, onFilters, onSav
     }
   }
 
-  const views = showAll ? savedViews : pinned;
-
   return (
     <div className="qfilters">
-      <span className="qf-label">Views</span>
-      {views.map((v) => (
-        <button key={v.id} type="button" className="chip" aria-pressed={activeView === v.id} onClick={() => onSavedView(activeView === v.id ? null : v)}>
-          {v.name}
-        </button>
-      ))}
-      {rest.length > 0 && (
-        <button type="button" className="chip" onClick={() => setShowAll((s) => !s)}>
-          {showAll ? "Fewer" : `+${rest.length} more`}
-        </button>
-      )}
-
-      <span className="qf-divider" />
-
       {QUICK_FILTERS.map((qf) => (
         <button
           key={qf.key}
@@ -350,7 +328,7 @@ export function QuickFilters({ filters, savedViews, activeView, onFilters, onSav
       {countFilters(filters) > 0 && (
         <>
           <span className="qf-divider" />
-          <button type="button" className="chip" onClick={() => { onFilters({}); onSavedView(null); }}>
+          <button type="button" className="chip" onClick={() => onFilters({})}>
             <X size={12} strokeWidth={2.4} /> Clear
           </button>
         </>

@@ -198,14 +198,6 @@ class UsageMetric(Stamped, table=True):
     feature_adoption_pct: int = 0
 
 
-class SavedView(Stamped, table=True):
-    name: str
-    filter_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
-    pinned: bool = False
-    is_default: bool = False
-    sort_index: float = 0.0
-
-
 class BoardColumn(Stamped, table=True):
     """A user-defined board column.
 

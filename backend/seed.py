@@ -22,7 +22,6 @@ from models import (
     Contact,
     HealthSnapshot,
     Risk,
-    SavedView,
     Task,
     UsageMetric,
     User,
@@ -354,17 +353,6 @@ TASKS = [
     ("done", "NFS-05", "Share VLs pricing sheet", "expansion", "normal", -6, None, None, 6),
 ]
 
-SAVED_VIEWS = [
-    ("All Pilots", {"modes": ["pilot"]}, True),
-    ("Customers", {"modes": ["customer"]}, True),
-    ("In Data Procurement", {"workstreams": ["data_procurement"]}, False),
-    ("Awaiting Approval", {"columns": ["approval"]}, False),
-    ("At Risk", {"bands": ["at_risk", "critical"]}, True),
-    ("Negative Margin", {"negative_margin": True}, True),
-    ("Stalled Handoffs", {"stalled_handoff": True}, False),
-]
-
-
 # --- health curve calibration ------------------------------------------------
 
 def interpolate(curve: list[tuple[int, int]], days_ago: int) -> float:
@@ -633,11 +621,6 @@ def seed_if_empty(session: Session) -> bool:
                 completed_at=_dt(done_days) if done_days is not None else None,
                 sort_index=float(due_offset),
             )
-        )
-
-    for i, (name, filters, pinned) in enumerate(SAVED_VIEWS):
-        session.add(
-            SavedView(name=name, filter_json=filters, pinned=pinned, sort_index=float(i))
         )
 
     session.commit()
