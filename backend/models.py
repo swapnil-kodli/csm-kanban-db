@@ -28,16 +28,14 @@ class Stamped(SQLModel):
 
 
 # --- enums as literal string sets (validated in schemas, stored as str) -------
-SEGMENTS = ("enterprise", "mid_market", "smb")
-LIFECYCLE_STAGES = (
-    "ready_for_onboarding",
-    "onboarding",
-    "adopting",
-    "healthy",
-    "renewal",
-    "closed",
-)
-CLOSED_REASONS = ("renewed", "churned")
+# Two independent axes, deliberately not collapsed into one field:
+#   column     = where the engagement sits in the delivery pipeline (drag-drop)
+#   workstream = what the team is actively doing on it right now (drawer only)
+COLUMNS = ("ready_for_onboarding", "onboarding", "working", "approval", "launch")
+WORKSTREAMS = ("bot_making", "data_procurement", "voice_ai_calling")
+MODES = ("pilot", "customer")
+CLIENT_TYPES = ("voice_ai_only", "data_plus_voice_ai")
+COMM_MODES = ("whatsapp", "email")
 HEALTH_BANDS = ("healthy", "watch", "at_risk", "critical")
 TASK_TYPES = (
     "onboarding",
@@ -65,33 +63,54 @@ class User(Stamped, table=True):
 class Account(Stamped, table=True):
     key: str = Field(index=True, unique=True)          # Jira-style, e.g. SBP-01
     name: str = Field(index=True)
-    segment: str
+
+    # --- the two axes ------------------------------------------------------
+    column: str = Field(default="ready_for_onboarding", index=True)
+    workstream: str = Field(default="bot_making", index=True)
+    column_changed_at: Optional[datetime] = None        # drives `column_stalled`
+
+    # --- commercial shape --------------------------------------------------
+    mode: str = Field(default="pilot", index=True)      # pilot | customer
+    client_type: str = Field(default="voice_ai_only")   # voice_ai_only | data_plus_voice_ai
+
     city: Optional[str] = None
-    lifecycle_stage: str = Field(default="adopting", index=True)
-    closed_reason: Optional[str] = None
-    arr: int = 0                                        # whole rupees, server-computed
     owner_id: str = Field(foreign_key="user.id", index=True)
 
-    # health engine outputs (cached)
+    # --- health engine outputs (cached) ------------------------------------
     health_score: int = 70
     health_band: str = "watch"
     health_manual_override: Optional[str] = None
     health_override_reason: Optional[str] = None
     health_override_at: Optional[datetime] = None
+    health_note: Optional[str] = None                   # free text, set during a check
 
-    # health engine inputs
-    entitled_seats: int = 20                            # denominator for usage_score
-    last_nps: Optional[int] = None                      # maps to sentiment_score
+    # --- health engine inputs ----------------------------------------------
+    entitled_seats: int = 20
+    last_nps: Optional[int] = None
 
-    expansion_flag: bool = False
+    # --- primary POC (the drawer leads with this; `contact` holds the rest) -
+    poc_name: Optional[str] = None
+    poc_email: Optional[str] = None
+    poc_phone: Optional[str] = None
+    comm_modes: list = Field(default_factory=list, sa_column=Column(JSON))
+
+    # --- costing: what was quoted -----------------------------------------
+    quoted_total: int = 0
+    quoted_line_items: list = Field(default_factory=list, sa_column=Column(JSON))
+    quoted_at: Optional[date] = None
+    quote_notes: Optional[str] = None
+
+    # --- pnl: the reality against that quote -------------------------------
+    # total_cost / gross_margin / margin_pct are computed server-side on read,
+    # never stored, so they cannot drift from cost_items.
+    revenue_recognised: int = 0
+    cost_items: list = Field(default_factory=list, sa_column=Column(JSON))
+
     tags: list = Field(default_factory=list, sa_column=Column(JSON))
     handoff_received_at: Optional[datetime] = None
-    last_contact_at: Optional[datetime] = None          # derived from activities
-    attention_score: float = 0.0                        # cached, for card ordering
-    pinned: bool = False                                # human judgement outranks the formula
-
-    industry: Optional[str] = None                      # stub, no UI
-    region: Optional[str] = None                        # stub, no UI
+    last_contact_at: Optional[datetime] = None
+    attention_score: float = 0.0
+    pinned: bool = False
 
 
 class Contact(Stamped, table=True):
@@ -104,15 +123,6 @@ class Contact(Stamped, table=True):
     is_economic_buyer: bool = False
     status: str = "active"                              # active | departed
     sentiment: Optional[int] = None                     # stub, no UI
-
-
-class Subscription(Stamped, table=True):
-    account_id: str = Field(foreign_key="account.id", index=True)
-    start_date: Optional[date] = None
-    renewal_date: date
-    auto_renew: bool = True
-    status: str = "active"
-    line_items: list = Field(default_factory=list, sa_column=Column(JSON))
 
 
 class Task(Stamped, table=True):
@@ -175,9 +185,11 @@ class SavedView(Stamped, table=True):
     sort_index: float = 0.0
 
 
-class Milestone(Stamped, table=True):
-    account_id: str = Field(foreign_key="account.id", index=True)
-    label: str
-    status: str = "pending"                             # pending | done
-    target_date: Optional[date] = None
-    sort_index: float = 0.0
+class GoogleCredential(Stamped, table=True):
+    """Single-row Gmail OAuth credential store (single-user MVP)."""
+
+    email: Optional[str] = None
+    refresh_token: str
+    access_token: Optional[str] = None
+    access_token_expires_at: Optional[datetime] = None
+    scope: str = "https://www.googleapis.com/auth/gmail.readonly"
