@@ -1,10 +1,25 @@
 export type HealthBand = "healthy" | "watch" | "at_risk" | "critical";
-export type BoardColumnKey =
-  | "ready_for_onboarding"
-  | "onboarding"
-  | "working"
-  | "approval"
-  | "launch";
+/** Column keys are user-defined now; nothing may assume a fixed set. */
+export type BoardColumnKey = string;
+
+export interface ColumnConfig {
+  id: string;
+  key: string;
+  label: string;
+  color: string;
+  position: number;
+  is_archived: boolean;
+  is_default_entry: boolean;
+  description: string | null;
+  stalled_after_days: number | null;
+  card_count: number;
+}
+
+export interface ColumnImpact {
+  card_count: number;
+  saved_views: string[];
+  is_default_entry: boolean;
+}
 export type Workstream = "bot_making" | "data_procurement" | "voice_ai_calling";
 export type Mode = "pilot" | "customer";
 export type ClientType = "voice_ai_only" | "data_plus_voice_ai";
@@ -34,7 +49,10 @@ export interface AccountCard {
   health_band_label: string;
   health_dot: string;
   is_overridden: boolean;
-  column: BoardColumnKey;
+  column_id: string;
+  column_key: string | null;
+  column_label: string;
+  column_color: string;
   attention_score: number;
   pinned: boolean;
   handoff: boolean;
@@ -69,14 +87,18 @@ export interface TaskCard {
 }
 
 export interface BoardColumn {
-  key: BoardColumnKey;
+  id: string;
+  key: string;
   title: string;
-  dot: string;
+  color: string;
+  description: string | null;
+  position: number;
   count: number;
   total_quoted: number;
   cards: AccountCard[];
   droppable: boolean;
-  handoff_inbox: boolean;
+  is_default_entry: boolean;
+  stalled_after_days: number | null;
 }
 
 export interface Swimlane {
@@ -167,9 +189,10 @@ export interface AccountDetail {
     key: string;
     name: string;
     city: string | null;
-    column: BoardColumnKey;
+    column_id: string;
+    column_key: string | null;
     column_label: string;
-    column_dot: string;
+    column_color: string;
     days_in_column: number | null;
     column_stalled: boolean;
     workstream: Workstream;

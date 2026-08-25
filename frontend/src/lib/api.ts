@@ -139,7 +139,8 @@ async function write<T>(method: string, path: string, body?: unknown): Promise<T
 
 export const apiPost = <T,>(path: string, body?: unknown) => write<T>("POST", path, body);
 export const apiPatch = <T,>(path: string, body?: unknown) => write<T>("PATCH", path, body);
-export const apiDelete = <T,>(path: string) => write<T>("DELETE", path);
+// DELETE carries a body here: destructive column actions require a target.
+export const apiDelete = <T,>(path: string, body?: unknown) => write<T>("DELETE", path, body);
 
 export function qs(params: Record<string, string | undefined>): string {
   const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== "");

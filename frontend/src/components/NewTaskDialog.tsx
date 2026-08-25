@@ -22,9 +22,14 @@ export function NewTaskDialog({
   const [bucket, setBucket] = useState<TaskBucket>("this_week");
 
   return (
-    <>
-      <div className="scrim" onClick={onClose} aria-hidden="true" />
-      <div className="dialog" role="dialog" aria-modal="true" aria-label={`New task for ${accountName}`}>
+    <div className="dialog-scrim" onClick={onClose}>
+      <div
+        className="dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`New task for ${accountName}`}
+        onClick={(e) => e.stopPropagation()}
+      >
         <h3>New task · {accountName}</h3>
         <input
           autoFocus
@@ -65,6 +70,6 @@ export function NewTaskDialog({
           </button>
         </div>
       </div>
-    </>
+    </div>
   );
 }

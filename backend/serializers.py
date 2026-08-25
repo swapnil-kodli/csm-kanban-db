@@ -20,22 +20,8 @@ from engines import health as health_engine
 from engines import pnl as pnl_engine
 from engines.attention import BookContext, score_account
 
-# --- the delivery pipeline ---------------------------------------------------
-COLUMN_TITLES = {
-    "ready_for_onboarding": "Ready for Onboarding",
-    "onboarding": "Onboarding",
-    "working": "Working",
-    "approval": "Approval",
-    "launch": "Launch",
-}
-COLUMN_DOTS = {
-    "ready_for_onboarding": "s-handoff",
-    "onboarding": "s-onboarding",
-    "working": "s-adopting",
-    "approval": "s-renewal",
-    "launch": "s-healthy",
-}
-COLUMN_ORDER = list(COLUMN_TITLES)
+# Column titles, colours and order are no longer constants — they live in the
+# board_column table and are user-editable. Nothing here may assume a key.
 
 # --- what the team is doing right now ----------------------------------------
 WORKSTREAM_TITLES = {
@@ -101,6 +87,7 @@ def account_card(
     flags = alert_engine.state_flags(ctx, account)
     scored = scored or score_account(ctx, account)
     band = health_engine.effective_band(account)
+    column = ctx.column_of(account)
 
     return {
         "kind": "account",
@@ -124,10 +111,14 @@ def account_card(
         "health_dot": BAND_DOTS[band],
         "is_overridden": account.health_manual_override is not None,
         # board mechanics, not card content
-        "column": account.column,
+        "column_id": account.column_id,
+        "column_key": column.key if column else None,
+        "column_label": column.label if column else "Unassigned",
+        "column_color": column.color if column else "#6b6b6b",
         "attention_score": scored["score"],
         "pinned": account.pinned,
-        "handoff": account.column == "ready_for_onboarding",
+        # The column new work lands in IS the handoff inbox.
+        "handoff": bool(column and column.is_default_entry),
         "stalled_handoff": flags["stalled_handoff"],
         "column_stalled": flags["column_stalled"],
         # grouping inputs, never rendered on the card face
@@ -194,8 +185,11 @@ def account_matches(ctx: BookContext, account: Account, f: dict) -> bool:
         return False
     if f.get("workstreams") and account.workstream not in f["workstreams"]:
         return False
-    if f.get("columns") and account.column not in f["columns"]:
-        return False
+    if f.get("columns"):
+        column = ctx.column_of(account)
+        # Saved views store the immutable key, so a rename never breaks them.
+        if column is None or column.key not in f["columns"]:
+            return False
     if f.get("quoted_min") is not None and account.quoted_total < int(f["quoted_min"]):
         return False
     if f.get("quoted_max") is not None and account.quoted_total > int(f["quoted_max"]):

@@ -17,6 +17,7 @@ from sqlmodel import Session, select
 
 from models import (
     Account,
+    BoardColumn,
     Activity,
     Contact,
     HealthSnapshot,
@@ -426,8 +427,36 @@ def seed_if_empty(session: Session) -> bool:
 
     csm = User(name="Shivam Singh", initials="SS", avatar_color="#111111")
     session.add(csm)
+
+    # Config rows first: an account referencing a column_id that does not exist
+    # yet would fail the insert.
+    #
+    # stalled_after_days carries what v2 hardcoded — 3 in the entry column, 14
+    # in the middle of the pipeline, and NULL in Launch, where sitting still is
+    # delivery rather than drift.
+    column_specs = [
+        ("ready_for_onboarding", "Ready for Onboarding", "#9d50dd", True, 3,
+         "Closed Won upstream and not yet picked up."),
+        ("onboarding", "Onboarding", "#2bb4d6", False, 14,
+         "Kickoff through to first configuration."),
+        ("working", "Working", "#6b6b6b", False, 14, "Active delivery."),
+        ("approval", "Approval", "#f5b400", False, 14, "Awaiting client sign-off."),
+        ("launch", "Launch", "#00c875", False, None,
+         "Live. No stall tracking — sitting here is delivery, not drift."),
+    ]
+    columns: dict[str, BoardColumn] = {}
+    for i, (key, label, color, entry, stalled, desc) in enumerate(column_specs):
+        column = BoardColumn(
+            key=key, label=label, color=color, position=float(i + 1),
+            is_default_entry=entry, stalled_after_days=stalled, description=desc,
+        )
+        session.add(column)
+        columns[key] = column
+
     session.commit()
     session.refresh(csm)
+    for column in columns.values():
+        session.refresh(column)
 
     by_key: dict[str, Account] = {}
 
@@ -446,7 +475,7 @@ def seed_if_empty(session: Session) -> bool:
             key=spec["key"],
             name=spec["name"],
             city=spec["city"],
-            column=spec["column"],
+            column_id=columns[spec["column"]].id,
             workstream=spec["workstream"],
             column_changed_at=_dt(spec.get("column_days_ago", 1)),
             mode=spec["mode"],

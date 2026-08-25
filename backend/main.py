@@ -15,6 +15,7 @@ from engines import health as health_engine
 from engines.attention import refresh_cached_scores
 from routers import (
     accounts,
+    columns,
     activities,
     board,
     contacts,
@@ -101,6 +102,7 @@ def recompute(session: Session = Depends(get_session)):
 
 
 api.include_router(board.router)
+api.include_router(columns.router)
 api.include_router(accounts.router)
 api.include_router(tasks.router)
 api.include_router(activities.router)

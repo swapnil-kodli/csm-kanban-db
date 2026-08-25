@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Search, SlidersHorizontal, Plus, AlertTriangle, X } from "lucide-react";
+import { Search, SlidersHorizontal, Plus, AlertTriangle, X, Settings as Gear } from "lucide-react";
+import { Link } from "react-router-dom";
 import type { Filters, GroupBy, Metric, SavedView } from "../lib/types";
 import { formatINR } from "../lib/format";
 
@@ -70,6 +71,10 @@ export function TopBar({
             <option key={g.key} value={g.key}>{g.label}</option>
           ))}
         </select>
+
+        <Link className="btn btn-icon" to="settings" title="Settings" aria-label="Settings">
+          <Gear size={14} strokeWidth={2.2} />
+        </Link>
 
         <div style={{ position: "relative" }}>
           <button type="button" className="btn" aria-pressed={panelOpen} onClick={() => setPanelOpen((v) => !v)}>

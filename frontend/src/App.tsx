@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import type {
-  AccountCard, AccountDetail, BoardResponse, Filters, GroupBy,
+  AccountCard, AccountDetail, BoardResponse, ColumnConfig, Filters, GroupBy,
   HealthBand, Metric, SavedView, TaskBucket,
 } from "./lib/types";
 import { apiDelete, apiGet, apiPatch, apiPost, getSource, onSourceChange, qs } from "./lib/api";
@@ -11,6 +11,7 @@ import { DegradedBanner, MetricsStrip, QuickFilters, TopBar } from "./components
 import { Drawer } from "./components/Drawer";
 import { NewTaskDialog } from "./components/NewTaskDialog";
 import { CommandPalette, OverrideDialog } from "./components/Palette";
+import { Settings } from "./components/Settings";
 
 const GROUP_KEY = "signal-cs:group-by";
 
@@ -45,6 +46,13 @@ export default function App() {
     readStored(GROUP_KEY, "none", ["none", "priority", "mode", "client_type", "workstream"] as const)
   );
   const [collapsedLanes, setCollapsedLanes] = useState<Set<string>>(new Set());
+  const [columnConfig, setColumnConfig] = useState<ColumnConfig[]>([]);
+  const onSettings = location.pathname.replace(/\/+$/, "").endsWith("/settings");
+
+  const loadColumns = useCallback(async () => {
+    const d = await apiGet<{ columns: ColumnConfig[] }>("/columns");
+    setColumnConfig(d.columns);
+  }, []);
 
   const toggleLane = useCallback((key: string) => {
     setCollapsedLanes((prev) => {
@@ -131,6 +139,7 @@ export default function App() {
         ]);
         if (cancelled) return;
         setSavedViews(views.views);
+        await loadColumns();
         setUser(me.user);
         setFatal(null);
       } catch (err) {
@@ -178,17 +187,17 @@ export default function App() {
       ...board,
       columns: board.columns.map((col) => {
         const without = col.cards.filter((c) => c.id !== cardId);
-        if (col.key !== columnKey) return { ...col, cards: without, count: without.length };
+        if (col.id !== columnKey) return { ...col, cards: without, count: without.length };
         const moved = board.columns.flatMap((c) => c.cards).find((c) => c.id === cardId);
         if (!moved) return { ...col, cards: without, count: without.length };
-        const next: AccountCard = { ...moved, column: columnKey as AccountCard["column"] };
+        const next: AccountCard = { ...moved, column_id: columnKey };
         return { ...col, cards: [next, ...without], count: without.length + 1 };
       }),
     });
 
     try {
       // Column only. workstream is a different axis and never moves on drag.
-      await apiPatch(`/accounts/${cardId}`, { column: columnKey });
+      await apiPatch(`/accounts/${cardId}`, { column_id: columnKey });
       await refresh();
     } catch {
       setBoard(snapshot);
@@ -349,6 +358,15 @@ export default function App() {
 
       {degraded && <DegradedBanner onRetry={() => refresh()} />}
 
+      {onSettings ? (
+        <Settings
+          onChanged={() => {
+            loadColumns();
+            refresh();
+          }}
+        />
+      ) : (
+        <>
       <MetricsStrip metrics={metrics} activeKey={activeMetric} onApply={applyMetric} />
 
       <QuickFilters
@@ -394,10 +412,13 @@ export default function App() {
           onMove={handleDrop}
         />
       )}
+        </>
+      )}
 
       {detail && openAccountId && (
         <Drawer
           detail={detail}
+          columns={columnConfig}
           onClose={() => setOpenAccountId(null)}
           onPatch={(patch) => patchAccount(openAccountId, patch)}
           onLogActivity={logActivity}

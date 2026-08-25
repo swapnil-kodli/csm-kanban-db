@@ -121,22 +121,18 @@ def state_flags(ctx: BookContext, account: Account) -> dict:
     size_band = ctx.size_band_by_account.get(account.id, "mid")
     th = health_engine.thresholds(size_band, account.mode)
     days_in_column = ctx.days_in_column(account)
+    column = ctx.column_of(account)
 
-    # v2 keeps the v1 handoff treatment, still keyed to the entry column.
-    stalled_handoff = False
-    if account.column == "ready_for_onboarding" and account.handoff_received_at:
-        stalled_handoff = (datetime.utcnow() - account.handoff_received_at).days > 3
+    # The column new work lands in IS the handoff inbox — one flag, not two
+    # ideas. Stalling anywhere, including there, is one per-column threshold.
+    is_entry = bool(column and column.is_default_entry)
+    stalled = ctx.is_stalled(account)
 
     return {
         "no_contact": days_since_contact is not None
         and days_since_contact > th["no_contact_days"],
-        "stalled_handoff": stalled_handoff,
-        # Launch is the terminal column: sitting there is delivery, not drift.
-        # Flagging it would put a stalled badge on every healthy engagement and
-        # the signal would stop meaning anything.
-        "column_stalled": account.column != "launch"
-        and days_in_column is not None
-        and days_in_column > STALLED_COLUMN_DAYS,
+        "stalled_handoff": stalled and is_entry,
+        "column_stalled": stalled and not is_entry,
         "days_since_contact": days_since_contact,
         "days_in_column": days_in_column,
         "size_band": size_band,

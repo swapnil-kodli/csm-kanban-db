@@ -23,7 +23,7 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
-from models import Account, Risk, Task
+from models import Account, BoardColumn, Risk, Task
 from engines import health as health_engine
 from engines import pnl as pnl_engine
 
@@ -43,6 +43,16 @@ class BookContext:
     def __init__(self, session: Session):
         self.session = session
         self.accounts = session.exec(select(Account)).all()
+
+        # Column config is read once per request. Behaviour that v2 hardcoded to
+        # literal column keys now comes from these rows.
+        self.columns = sorted(
+            session.exec(select(BoardColumn)).all(), key=lambda c: c.position
+        )
+        self.column_by_id: dict[str, BoardColumn] = {c.id: c for c in self.columns}
+        self.entry_column: Optional[BoardColumn] = next(
+            (c for c in self.columns if c.is_default_entry), None
+        )
         self.quote_ladder = sorted(a.quoted_total for a in self.accounts) or [0]
         self.pnl_by_account: dict[str, dict] = {
             a.id: pnl_engine.compute(a) for a in self.accounts
@@ -95,6 +105,21 @@ class BookContext:
             return None
         return (datetime.utcnow() - account.column_changed_at).days
 
+    def column_of(self, account: Account) -> Optional[BoardColumn]:
+        return self.column_by_id.get(account.column_id)
+
+    def is_stalled(self, account: Account) -> bool:
+        """A column with no stalled_after_days does not track stalling at all.
+
+        That NULL is how a terminal column opts out — it replaces v2's hardcoded
+        "never stall in Launch" check, with one mechanism rather than two.
+        """
+        column = self.column_of(account)
+        if column is None or column.stalled_after_days is None:
+            return False
+        days = self.days_in_column(account)
+        return days is not None and days > column.stalled_after_days
+
 
 def score_account(ctx: BookContext, account: Account) -> dict:
     delta = ctx.velocity_by_account.get(account.id)
@@ -118,13 +143,7 @@ def score_account(ctx: BookContext, account: Account) -> dict:
     # signal. Only a known-thin or negative margin scores.
     margin_w = 15.0 if margin_pct is not None and margin_pct < pnl_engine.MARGIN_AMBER else 0.0
 
-    stalled_w = (
-        10.0
-        if account.column != "launch"
-        and days_in_column is not None
-        and days_in_column > STALLED_COLUMN_DAYS
-        else 0.0
-    )
+    stalled_w = 10.0 if ctx.is_stalled(account) else 0.0
     escalation_w = float(min(20, 12 * ctx.open_high_risks.get(account.id, 0)))
     neglect_w = (
         round(min((days_since_contact - neglect_window) / 2, 10), 1)

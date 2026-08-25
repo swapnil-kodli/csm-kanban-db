@@ -14,9 +14,6 @@ from sqlmodel import Session
 from db import get_session
 from engines.attention import BookContext, score_account
 from serializers import (
-    COLUMN_DOTS,
-    COLUMN_ORDER,
-    COLUMN_TITLES,
     LANE_ORDER,
     account_card,
     account_matches,
@@ -52,24 +49,29 @@ def get_board(
         card["lane_title"] = title
 
     columns = []
-    for key in COLUMN_ORDER:
+    # Columns come from config, in configured order. Archived columns are hidden
+    # from the board but keep their history and their rows.
+    for column in ctx.columns:
+        if column.is_archived:
+            continue
         col_cards = sorted(
-            [c for c in cards if c["column"] == key],
-            # Pinned first, then worst attention score first.
+            [c for c in cards if c["column_id"] == column.id],
             key=lambda c: (not c["pinned"], -c["attention_score"], c["name"]),
         )
         columns.append(
             {
-                "key": key,
-                "title": COLUMN_TITLES[key],
-                "dot": COLUMN_DOTS[key],
+                "id": column.id,
+                "key": column.key,
+                "title": column.label,
+                "color": column.color,
+                "description": column.description,
+                "position": column.position,
                 "count": len(col_cards),
                 "total_quoted": sum(c["quoted_total"] for c in col_cards),
                 "cards": col_cards,
                 "droppable": True,
-                # The handoff inbox keeps its v1 treatment: dashed left border,
-                # HANDOFF chip, stalled badge after 3 days.
-                "handoff_inbox": key == "ready_for_onboarding",
+                "is_default_entry": column.is_default_entry,
+                "stalled_after_days": column.stalled_after_days,
             }
         )
 

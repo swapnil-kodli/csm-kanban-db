@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 from db import get_session
 from models import (
     Account,
+    BoardColumn,
     Activity,
     Contact,
     HealthSnapshot,
@@ -26,8 +27,6 @@ from engines.attention import BookContext, score_account
 from serializers import (
     BAND_DOTS,
     CLIENT_TYPE_TITLES,
-    COLUMN_DOTS,
-    COLUMN_TITLES,
     COMM_MODE_TITLES,
     MODE_TITLES,
     WORKSTREAM_GLYPHS,
@@ -64,6 +63,7 @@ def get_account(account_id: str, session: Session = Depends(get_session)):
     scored = score_account(ctx, account)
     flags = alert_engine.state_flags(ctx, account)
     owner = session.get(User, account.owner_id)
+    _column = ctx.column_of(account)
 
     contacts = session.exec(select(Contact).where(Contact.account_id == account_id)).all()
     tasks = session.exec(select(Task).where(Task.account_id == account_id)).all()
@@ -100,9 +100,10 @@ def get_account(account_id: str, session: Session = Depends(get_session)):
             "key": account.key,
             "name": account.name,
             "city": account.city,
-            "column": account.column,
-            "column_label": COLUMN_TITLES.get(account.column, account.column),
-            "column_dot": COLUMN_DOTS.get(account.column, "s-adopting"),
+            "column_id": account.column_id,
+            "column_key": _column.key if _column else None,
+            "column_label": _column.label if _column else "Unassigned",
+            "column_color": _column.color if _column else "#6b6b6b",
             "days_in_column": flags["days_in_column"],
             "column_stalled": flags["column_stalled"],
             "workstream": account.workstream,
@@ -257,7 +258,7 @@ def patch_account(
     data = payload.model_dump(exclude_unset=True)
 
     previous_mode = account.mode
-    previous_column = account.column
+    previous_column = account.column_id
 
     for field, value in data.items():
         if field in ("quoted_line_items", "cost_items"):
@@ -270,9 +271,12 @@ def patch_account(
 
     # Dragging between columns must never touch the workstream: they are
     # different axes. Only the column's own clock resets.
-    if "column" in data and account.column != previous_column:
+    if "column_id" in data and account.column_id != previous_column:
         account.column_changed_at = datetime.utcnow()
-        if account.column == "ready_for_onboarding" and not account.handoff_received_at:
+        entry = session.exec(
+            select(BoardColumn).where(BoardColumn.is_default_entry == True)  # noqa: E712
+        ).first()
+        if entry and account.column_id == entry.id and not account.handoff_received_at:
             account.handoff_received_at = datetime.utcnow()
 
     account.updated_at = datetime.utcnow()

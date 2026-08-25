@@ -3,19 +3,12 @@ import { Sparkline } from "./Sparkline";
 import { TaskRow } from "./Cards";
 import { EmailThreadsBoundary, EmailThreadsPanel } from "./EmailThreads";
 import { formatINR, inrExact, isoPlusDays, relativeDate, shortDate, velocityGlyph } from "../lib/format";
-import type { AccountDetail, ClientType, CommMode, Mode, TaskBucket, Workstream, TaskCard } from "../lib/types";
+import type { AccountDetail, ClientType, ColumnConfig, CommMode, Mode, TaskBucket, Workstream, TaskCard } from "../lib/types";
 
 const WORKSTREAMS: { value: Workstream; label: string }[] = [
   { value: "bot_making", label: "Bot-Making" },
   { value: "data_procurement", label: "Data Procurement" },
   { value: "voice_ai_calling", label: "Voice AI Calling" },
-];
-const COLUMNS = [
-  { value: "ready_for_onboarding", label: "Ready for Onboarding" },
-  { value: "onboarding", label: "Onboarding" },
-  { value: "working", label: "Working" },
-  { value: "approval", label: "Approval" },
-  { value: "launch", label: "Launch" },
 ];
 const MODES: { value: Mode; label: string }[] = [
   { value: "pilot", label: "Pilot" },
@@ -67,6 +60,7 @@ function Field({
 
 export function Drawer({
   detail,
+  columns,
   onClose,
   onPatch,
   onLogActivity,
@@ -75,6 +69,8 @@ export function Drawer({
   onClearOverride,
 }: {
   detail: AccountDetail;
+  /** Column options come from config — nothing here assumes a fixed set. */
+  columns: ColumnConfig[];
   onClose: () => void;
   onPatch: (patch: Record<string, unknown>) => void;
   onLogActivity: (payload: {
@@ -199,10 +195,18 @@ export function Drawer({
               </select>
             </Field>
             <Field label="Column">
-              <select value={account.column} onChange={(e) => onPatch({ column: e.target.value })}>
-                {COLUMNS.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
+              <select
+                value={account.column_id}
+                onChange={(e) => onPatch({ column_id: e.target.value })}
+              >
+                {columns
+                  .filter((c) => !c.is_archived || c.id === account.column_id)
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.label}
+                      {c.is_archived ? " (archived)" : ""}
+                    </option>
+                  ))}
               </select>
             </Field>
           </Panel>

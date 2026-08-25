@@ -21,7 +21,7 @@ export function AccountCardView({
 }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: card.id,
-    data: { kind: "account", column: card.column },
+    data: { kind: "account", column_id: card.column_id },
   });
 
   const classes = [

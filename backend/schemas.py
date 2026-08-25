@@ -8,9 +8,6 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-BoardColumn = Literal[
-    "ready_for_onboarding", "onboarding", "working", "approval", "launch"
-]
 Workstream = Literal["bot_making", "data_procurement", "voice_ai_calling"]
 Mode = Literal["pilot", "customer"]
 ClientType = Literal["voice_ai_only", "data_plus_voice_ai"]
@@ -45,7 +42,7 @@ class CostItem(BaseModel):
 class AccountPatch(BaseModel):
     name: Optional[str] = None
     city: Optional[str] = None
-    column: Optional[BoardColumn] = None
+    column_id: Optional[str] = None
     workstream: Optional[Workstream] = None
     mode: Optional[Mode] = None
     client_type: Optional[ClientType] = None
@@ -138,3 +135,35 @@ class SavedViewCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     filter_json: dict[str, Any] = Field(default_factory=dict)
     pinned: bool = False
+
+
+# --- v3a: board column configuration ----------------------------------------
+
+class ColumnCreate(BaseModel):
+    label: str = Field(min_length=1, max_length=60)
+    color: Optional[str] = None
+    position: Optional[float] = None
+    description: Optional[str] = None
+    stalled_after_days: Optional[int] = Field(default=None, ge=1, le=365)
+
+
+class ColumnPatch(BaseModel):
+    """`key` is absent on purpose — it is immutable, so saved views and filters
+    survive a rename."""
+
+    label: Optional[str] = Field(default=None, min_length=1, max_length=60)
+    color: Optional[str] = None
+    position: Optional[float] = None
+    description: Optional[str] = None
+    stalled_after_days: Optional[int] = Field(default=None, ge=1, le=365)
+    clear_stalled_after_days: bool = False
+    is_default_entry: Optional[bool] = None
+    is_archived: Optional[bool] = None
+
+
+class ColumnReorder(BaseModel):
+    ordered_ids: list[str]
+
+
+class ColumnDelete(BaseModel):
+    reassign_to: Optional[str] = None

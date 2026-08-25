@@ -9,20 +9,20 @@ import type { AccountCard, BoardResponse, GroupBy } from "../lib/types";
 function Column({
   colKey,
   title,
-  dot,
+  color,
   count,
   totalQuoted,
-  handoffInbox,
+  isEntry,
   cards,
   selectedId,
   onOpen,
 }: {
   colKey: string;
   title: string;
-  dot: string;
+  color: string;
   count: number;
   totalQuoted: number;
-  handoffInbox: boolean;
+  isEntry: boolean;
   cards: AccountCard[];
   selectedId: string | null;
   onOpen: (id: string) => void;
@@ -31,14 +31,14 @@ function Column({
   return (
     <section className="column" aria-label={title}>
       <header className="col-head">
-        <span className={`col-dot dot-${dot}`} aria-hidden="true" />
+        <span className="col-dot" style={{ background: color }} aria-hidden="true" />
         <h2 className="col-title">{title}</h2>
         <span className="col-count">{count}</span>
         <span className="col-total">{formatINR(totalQuoted)}</span>
       </header>
       <div
         ref={setNodeRef}
-        className={`col-body ${isOver ? "drop-target" : ""} ${handoffInbox ? "col-handoff" : ""}`}
+        className={`col-body ${isOver ? "drop-target" : ""} ${isEntry ? "col-handoff" : ""}`}
       >
         {cards.map((card) => (
           <AccountCardView
@@ -94,7 +94,7 @@ export function Board({
     const card = allCards.find((c) => c.id === e.active.id);
     // Dragging changes the column and nothing else. workstream is a separate
     // axis and is edited in the drawer only.
-    if (card && card.column !== target) onMove(card.id, String(target));
+    if (card && card.column_id !== target) onMove(card.id, String(target));
   }
 
   const lanes = groupBy === "none" ? [{ key: "all", title: "", count: 0, total_quoted: 0 }] : board.swimlanes;
@@ -127,17 +127,17 @@ export function Board({
                         : col.cards.filter((c) => c.lane === lane.key);
                     return (
                       <Column
-                        key={col.key + lane.key}
-                        colKey={col.key}
+                        key={col.id + lane.key}
+                        colKey={col.id}
                         title={col.title}
-                        dot={col.dot}
                         count={groupBy === "none" ? col.count : cards.length}
                         totalQuoted={
                           groupBy === "none"
                             ? col.total_quoted
                             : cards.reduce((s, c) => s + c.quoted_total, 0)
                         }
-                        handoffInbox={col.handoff_inbox}
+                        color={col.color}
+                        isEntry={col.is_default_entry}
                         cards={cards}
                         selectedId={selectedId}
                         onOpen={onOpen}
