@@ -13,7 +13,17 @@ from models import Account, User
 from engines import alerts as alert_engine
 from engines import health as health_engine
 from engines.attention import refresh_cached_scores
-from routers import accounts, activities, board, contacts, metrics, search, tasks, views
+from routers import (
+    accounts,
+    activities,
+    board,
+    contacts,
+    google,
+    metrics,
+    search,
+    tasks,
+    views,
+)
 
 APP_VERSION = os.getenv("APP_VERSION", "1.0.0")
 
@@ -21,7 +31,15 @@ APP_VERSION = os.getenv("APP_VERSION", "1.0.0")
 def bootstrap() -> None:
     """Create tables, seed when empty, then run the health + alert jobs once."""
     init_db()
+    from migrations import migrate
     from seed import seed_if_empty
+
+    with Session(engine) as session:
+        # A deployed v1 database is persisted on the compose volume, so it will
+        # be here when v2 boots. Migrate before anything queries it.
+        migrate(session)
+
+    init_db()  # pick up any table the migration dropped and the model still needs
 
     with Session(engine) as session:
         seeded = seed_if_empty(session)
@@ -90,5 +108,6 @@ api.include_router(contacts.router)
 api.include_router(views.router)
 api.include_router(search.router)
 api.include_router(metrics.router)
+api.include_router(google.router)
 
 app.include_router(api)

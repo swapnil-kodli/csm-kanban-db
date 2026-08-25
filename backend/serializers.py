@@ -1,5 +1,10 @@
 """Card and column shapes. The server does the grouping; the client renders
-columns as given (spec 03 §5).
+columns as given.
+
+The v2 card carries exactly four things — name, mode, workstream, health — and
+nothing else. Every other field belongs to the drawer. That cap is the whole
+point of the reshape: an over-stuffed card stops being scannable, which is the
+failure mode the research is most emphatic about.
 """
 from __future__ import annotations
 
@@ -9,27 +14,54 @@ from typing import Any, Optional
 
 from sqlmodel import Session, select
 
-from models import Account, Contact, Milestone, Risk, Subscription, Task, User
+from models import Account, Contact, Risk, Task, User
 from engines import alerts as alert_engine
 from engines import health as health_engine
+from engines import pnl as pnl_engine
 from engines.attention import BookContext, score_account
 
-STAGE_TITLES = {
+# --- the delivery pipeline ---------------------------------------------------
+COLUMN_TITLES = {
     "ready_for_onboarding": "Ready for Onboarding",
     "onboarding": "Onboarding",
-    "adopting": "Adopting",
-    "healthy": "Healthy",
-    "renewal": "Renewal",
-    "closed": "Closed",
+    "working": "Working",
+    "approval": "Approval",
+    "launch": "Launch",
 }
-STAGE_DOTS = {
+COLUMN_DOTS = {
     "ready_for_onboarding": "s-handoff",
     "onboarding": "s-onboarding",
-    "adopting": "s-adopting",
-    "healthy": "s-healthy",
-    "renewal": "s-renewal",
-    "closed": "s-churned",
+    "working": "s-adopting",
+    "approval": "s-renewal",
+    "launch": "s-healthy",
 }
+COLUMN_ORDER = list(COLUMN_TITLES)
+
+# --- what the team is doing right now ----------------------------------------
+WORKSTREAM_TITLES = {
+    "bot_making": "Bot-Making",
+    "data_procurement": "Data Procurement",
+    "voice_ai_calling": "Voice AI Calling",
+}
+# Progress glyph: where this workstream sits in the delivery sequence.
+WORKSTREAM_GLYPHS = {
+    "bot_making": "◔",
+    "data_procurement": "◑",
+    "voice_ai_calling": "◕",
+}
+WORKSTREAM_DOTS = {
+    "bot_making": "s-onboarding",
+    "data_procurement": "s-adopting",
+    "voice_ai_calling": "s-renewal",
+}
+
+MODE_TITLES = {"pilot": "Pilot", "customer": "Customer"}
+CLIENT_TYPE_TITLES = {
+    "voice_ai_only": "Voice AI only",
+    "data_plus_voice_ai": "Data + Voice AI",
+}
+COMM_MODE_TITLES = {"whatsapp": "WhatsApp", "email": "Email"}
+
 BUCKET_TITLES = {
     "today": "Today",
     "this_week": "This Week",
@@ -43,7 +75,6 @@ BAND_DOTS = {
     "at_risk": "h-risk",
     "critical": "h-critical",
 }
-SEGMENT_TITLES = {"enterprise": "Enterprise", "mid_market": "Mid-Market", "smb": "SMB"}
 TASK_TYPE_TITLES = {
     "onboarding": "Onboarding",
     "risk": "Risk",
@@ -54,128 +85,54 @@ TASK_TYPE_TITLES = {
     "admin": "Admin",
 }
 
-# Badge render order: red first, then amber, then informational.
-BADGE_RANK = {
-    "escalation": 0,
-    "overdue": 1,
-    "renewal": 2,
-    "manual_risk": 3,
-    "stalled_handoff": 4,
-    "no_contact": 5,
-    "handoff": 6,
-    "expansion": 7,
-}
-
-
-# --- badges ------------------------------------------------------------------
-
-def account_badges(ctx: BookContext, account: Account, flags: dict) -> list[dict]:
-    badges: list[dict] = []
-    dtr = flags["days_to_renewal"]
-
-    if dtr is not None and 0 <= dtr <= 90:
-        badges.append(
-            {
-                "key": "renewal",
-                "label": f"Renewal in {dtr}d",
-                "variant": "red" if dtr <= 30 else "amber",
-            }
-        )
-
-    overdue = ctx.overdue_by_account.get(account.id, 0)
-    if overdue:
-        badges.append(
-            {"key": "overdue", "label": f"{overdue} overdue", "variant": "red"}
-        )
-
-    escalations = ctx.open_escalations.get(account.id, 0)
-    if escalations:
-        label = f"{escalations} escalation" + ("s" if escalations > 1 else "")
-        badges.append({"key": "escalation", "label": label, "variant": "red"})
-
-    if flags["no_contact"]:
-        badges.append(
-            {
-                "key": "no_contact",
-                "label": f"No contact {flags['days_since_contact']}d",
-                "variant": "grey",
-            }
-        )
-
-    if account.expansion_flag:
-        badges.append({"key": "expansion", "label": "Expansion", "variant": "green"})
-
-    if account.lifecycle_stage == "ready_for_onboarding":
-        badges.append({"key": "handoff", "label": "Handoff", "variant": "outline"})
-
-    if flags["stalled_handoff"]:
-        badges.append(
-            {"key": "stalled_handoff", "label": "Stalled handoff", "variant": "red"}
-        )
-
-    if account.health_manual_override:
-        badges.append(
-            {"key": "manual_risk", "label": "Manual risk", "variant": "red-outline"}
-        )
-
-    badges.sort(key=lambda b: BADGE_RANK.get(b["key"], 99))
-    return badges
-
 
 # --- cards -------------------------------------------------------------------
 
 def account_card(
-    ctx: BookContext,
-    account: Account,
-    next_action: Optional[Task],
-    scored: Optional[dict] = None,
+    ctx: BookContext, account: Account, scored: Optional[dict] = None
 ) -> dict:
+    """Exactly four things on the face of the card.
+
+    `column` and `workstream` are different axes and both are real: the column
+    is where the engagement sits in the pipeline, the workstream is what the
+    team is doing on it right now. Dragging between columns must never change
+    the workstream.
+    """
     flags = alert_engine.state_flags(ctx, account)
     scored = scored or score_account(ctx, account)
-    delta = ctx.velocity_by_account.get(account.id)
     band = health_engine.effective_band(account)
 
     return {
         "kind": "account",
         "id": account.id,
         "account_id": account.id,
+        # 1. name (+ key)
         "key": account.key,
         "name": account.name,
-        "segment": account.segment,
-        "segment_label": SEGMENT_TITLES.get(account.segment, account.segment),
-        "city": account.city,
-        "arr": account.arr,
-        "lifecycle_stage": account.lifecycle_stage,
-        "lifecycle_label": STAGE_TITLES.get(account.lifecycle_stage, ""),
-        "lifecycle_dot": STAGE_DOTS.get(account.lifecycle_stage, "s-adopting"),
-        "closed_reason": account.closed_reason,
+        # 2. pilot / customer
+        "mode": account.mode,
+        "mode_label": MODE_TITLES.get(account.mode, account.mode),
+        # 3. workstream
+        "workstream": account.workstream,
+        "workstream_label": WORKSTREAM_TITLES.get(account.workstream, account.workstream),
+        "workstream_glyph": WORKSTREAM_GLYPHS.get(account.workstream, "◔"),
+        "workstream_dot": WORKSTREAM_DOTS.get(account.workstream, "s-adopting"),
+        # 4. health status
         "health_score": account.health_score,
         "health_band": band,
-        "computed_band": account.health_band,
         "health_band_label": health_engine.BAND_LABELS[band],
         "health_dot": BAND_DOTS[band],
         "is_overridden": account.health_manual_override is not None,
-        "override_reason": account.health_override_reason,
-        "velocity": delta,
-        "days_to_renewal": flags["days_to_renewal"],
-        "days_since_contact": flags["days_since_contact"],
-        "expansion_flag": account.expansion_flag,
-        "pinned": account.pinned,
+        # board mechanics, not card content
+        "column": account.column,
         "attention_score": scored["score"],
-        "badges": account_badges(ctx, account, flags),
-        "next_action": (
-            {
-                "id": next_action.id,
-                "title": next_action.title,
-                "due_date": next_action.due_date.isoformat(),
-                "overdue": next_action.due_date < date.today(),
-            }
-            if next_action
-            else None
-        ),
-        "open_tasks": ctx.open_tasks_by_account.get(account.id, 0),
-        "overdue_tasks": ctx.overdue_by_account.get(account.id, 0),
-        "open_escalations": ctx.open_escalations.get(account.id, 0),
+        "pinned": account.pinned,
+        "handoff": account.column == "ready_for_onboarding",
+        "stalled_handoff": flags["stalled_handoff"],
+        "column_stalled": flags["column_stalled"],
+        # grouping inputs, never rendered on the card face
+        "client_type": account.client_type,
+        "quoted_total": account.quoted_total,
     }
 
 
@@ -190,6 +147,7 @@ def task_card(task: Task, account: Account) -> dict:
         "type": task.type,
         "type_label": TASK_TYPE_TITLES.get(task.type, task.type),
         "bucket": task.bucket,
+        "bucket_label": BUCKET_TITLES.get(task.bucket, task.bucket),
         "status": task.status,
         "priority": task.priority,
         "due_date": task.due_date.isoformat(),
@@ -205,25 +163,8 @@ def task_card(task: Task, account: Account) -> dict:
             "key": account.key,
             "name": account.name,
             "health_band": health_engine.effective_band(account),
-            "health_dot": BAND_DOTS[health_engine.effective_band(account)],
-            "arr": account.arr,
-            "segment": account.segment,
         },
     }
-
-
-# --- next action -------------------------------------------------------------
-
-def next_actions_by_account(session: Session) -> dict[str, Task]:
-    """Top open task per account: soonest due, then critical priority first."""
-    rank = {"critical": 0, "high": 1, "normal": 2}
-    out: dict[str, Task] = {}
-    tasks = session.exec(
-        select(Task).where(Task.status == "open", Task.bucket != "done")
-    ).all()
-    for t in sorted(tasks, key=lambda t: (t.due_date, rank.get(t.priority, 3))):
-        out.setdefault(t.account_id, t)
-    return out
 
 
 # --- filters -----------------------------------------------------------------
@@ -239,102 +180,79 @@ def parse_filters(raw: Optional[str]) -> dict:
 
 
 def account_matches(ctx: BookContext, account: Account, f: dict) -> bool:
-    """Ranked filters from spec 01 §6 plus the quick-filter chips."""
     if not f:
         return True
-    flags = alert_engine.state_flags(ctx, account)
     band = health_engine.effective_band(account)
-    dtr = flags["days_to_renewal"]
-    dsc = flags["days_since_contact"]
-    overdue = ctx.overdue_by_account.get(account.id, 0)
+    parts = ctx.pnl_by_account.get(account.id) or pnl_engine.compute(account)
+    flags = alert_engine.state_flags(ctx, account)
 
     if f.get("bands") and band not in f["bands"]:
         return False
-    if f.get("renewal_window"):
-        window = int(f["renewal_window"])
-        if dtr is None or dtr < 0 or dtr > window:
-            return False
-    if f.get("arr_min") is not None and account.arr < int(f["arr_min"]):
+    if f.get("modes") and account.mode not in f["modes"]:
         return False
-    if f.get("arr_max") is not None and account.arr > int(f["arr_max"]):
+    if f.get("client_types") and account.client_type not in f["client_types"]:
+        return False
+    if f.get("workstreams") and account.workstream not in f["workstreams"]:
+        return False
+    if f.get("columns") and account.column not in f["columns"]:
+        return False
+    if f.get("quoted_min") is not None and account.quoted_total < int(f["quoted_min"]):
+        return False
+    if f.get("quoted_max") is not None and account.quoted_total > int(f["quoted_max"]):
         return False
     if f.get("owner_id") and account.owner_id != f["owner_id"]:
         return False
-    if f.get("stages") and account.lifecycle_stage not in f["stages"]:
-        return False
-    if f.get("segments") and account.segment not in f["segments"]:
-        return False
     if f.get("tags") and not set(f["tags"]) & set(account.tags or []):
         return False
-    if f.get("last_contact_gt") is not None:
-        threshold = int(f["last_contact_gt"])
-        if dsc is None or dsc <= threshold:
+    if f.get("negative_margin"):
+        # Null margin is unknown, not negative — it must not match.
+        if parts["margin_pct"] is None or parts["gross_margin"] >= 0:
             return False
-    if f.get("expansion") and not account.expansion_flag:
+    if f.get("thin_margin"):
+        if parts["margin_pct"] is None or parts["margin_pct"] >= pnl_engine.MARGIN_AMBER:
+            return False
+    if f.get("stalled_handoff") and not flags["stalled_handoff"]:
         return False
-    if f.get("overdue") and overdue == 0:
+    if f.get("column_stalled") and not flags["column_stalled"]:
+        return False
+    if f.get("no_contact") and not flags["no_contact"]:
+        return False
+    if f.get("overdue") and ctx.overdue_by_account.get(account.id, 0) == 0:
         return False
     if f.get("attention"):
         from engines.attention import ATTENTION_THRESHOLD
 
         if not account.pinned and score_account(ctx, account)["score"] < ATTENTION_THRESHOLD:
             return False
-    if f.get("high_value"):
-        if account.arr < ctx.top_quartile_arr():
-            return False
+    if f.get("high_value") and account.quoted_total < ctx.top_quartile_quote():
+        return False
     if f.get("q"):
         needle = str(f["q"]).lower()
-        haystack = f"{account.name} {account.key} {account.city or ''}".lower()
+        haystack = f"{account.name} {account.key} {account.poc_name or ''}".lower()
         if needle not in haystack:
-            return False
-    return True
-
-
-def task_matches(task: Task, account: Account, f: dict, matched_account: bool) -> bool:
-    if not matched_account:
-        return False
-    if not f:
-        return True
-    if f.get("task_status") and task.status != f["task_status"]:
-        return False
-    if f.get("priorities") and task.priority not in f["priorities"]:
-        return False
-    if f.get("overdue") and not (task.status == "open" and task.due_date < date.today()):
-        return False
-    if f.get("q"):
-        needle = str(f["q"]).lower()
-        if needle not in f"{task.title} {account.name} {account.key}".lower():
             return False
     return True
 
 
 # --- swimlanes ---------------------------------------------------------------
 
-MONTHS = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-]
-
-
-def lane_for(ctx: BookContext, group_by: str, card: dict, account: Account) -> tuple[str, str]:
+def lane_for(group_by: str, account: Account) -> tuple[str, str]:
+    if group_by == "workstream":
+        return account.workstream, WORKSTREAM_TITLES.get(account.workstream, account.workstream)
+    if group_by == "mode":
+        return account.mode, MODE_TITLES.get(account.mode, account.mode)
+    if group_by == "client_type":
+        return account.client_type, CLIENT_TYPE_TITLES.get(account.client_type, account.client_type)
     if group_by == "priority":
-        if card["kind"] == "task":
-            key = card["priority"]
-            return key, {"critical": "Critical", "high": "High", "normal": "Normal"}[key]
-        band = card["health_band"]
+        band = health_engine.effective_band(account)
         key = {"critical": "critical", "at_risk": "high", "watch": "normal", "healthy": "normal"}[band]
         return key, {"critical": "Critical", "high": "High", "normal": "Normal"}[key]
-    if group_by == "segment":
-        return account.segment, SEGMENT_TITLES.get(account.segment, account.segment)
-    if group_by == "renewal_month":
-        rd = ctx.renewal_by_account.get(account.id)
-        if rd is None:
-            return "none", "No renewal date"
-        return f"{rd.year}-{rd.month:02d}", f"{MONTHS[rd.month - 1]} {rd.year}"
-    return "all", "All items"
+    return "all", "All engagements"
 
 
 LANE_ORDER = {
+    "workstream": list(WORKSTREAM_TITLES),
+    "mode": ["pilot", "customer"],
+    "client_type": ["data_plus_voice_ai", "voice_ai_only"],
     "priority": ["critical", "high", "normal"],
-    "segment": ["enterprise", "mid_market", "smb"],
 }

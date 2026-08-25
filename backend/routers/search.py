@@ -7,7 +7,7 @@ from sqlmodel import Session, select
 from db import get_session
 from models import Account, Activity, Contact, Task
 from engines import health as health_engine
-from serializers import BAND_DOTS, TASK_TYPE_TITLES
+from serializers import BAND_DOTS, MODE_TITLES, TASK_TYPE_TITLES, WORKSTREAM_TITLES
 
 router = APIRouter(tags=["search"])
 
@@ -28,9 +28,11 @@ def search(q: str = Query("", max_length=120), session: Session = Depends(get_se
             "id": a.id,
             "key": a.key,
             "name": a.name,
-            "segment": a.segment,
+            "mode": a.mode,
+            "mode_label": MODE_TITLES.get(a.mode, a.mode),
+            "workstream_label": WORKSTREAM_TITLES.get(a.workstream, a.workstream),
             "city": a.city,
-            "arr": a.arr,
+            "quoted_total": a.quoted_total,
             "health_band": health_engine.effective_band(a),
             "health_dot": BAND_DOTS[health_engine.effective_band(a)],
             "health_score": a.health_score,

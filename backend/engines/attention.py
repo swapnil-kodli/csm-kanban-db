@@ -3,11 +3,14 @@
     attention =
         band_weight        # critical 40, at_risk 28, watch 12, healthy 0
       + velocity_penalty   # max(0, -delta) capped at 20
-      + renewal_urgency    # <=15d:25, <=30d:18, <=60d:10, <=90d:5, else 0
-      + arr_weight         # percentile of account ARR within book, scaled 0-15
+      + margin_risk        # negative margin or <20%, +15
+      + stalled_column     # no column change in 14 days, +10
       + escalation_weight  # 12 per open high-severity risk, cap 20
-      + neglect_weight     # days_since_contact > 14 ? min((d-14)/2, 10) : 0
+      + neglect_weight     # days_since_contact past the mode window, cap 10
       + overdue_weight     # 3 per overdue task, cap 12
+
+`renewal_urgency` and `arr_weight` are gone: v2 has no renewal date and no ARR,
+so both terms lost their inputs entirely.
 
 Kept transparent on purpose: `terms` travels with the score so the drawer can
 show its working. A pinned account always sorts first — human judgement
@@ -20,8 +23,9 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
-from models import Account, Risk, Subscription, Task
+from models import Account, Risk, Task
 from engines import health as health_engine
+from engines import pnl as pnl_engine
 
 BAND_WEIGHTS = {"critical": 40, "at_risk": 28, "watch": 12, "healthy": 0}
 
@@ -30,18 +34,7 @@ BAND_WEIGHTS = {"critical": 40, "at_risk": 28, "watch": 12, "healthy": 0}
 ATTENTION_THRESHOLD = 35.0
 
 
-def renewal_urgency(days_to_renewal: Optional[int]) -> int:
-    if days_to_renewal is None or days_to_renewal < 0:
-        return 0
-    if days_to_renewal <= 15:
-        return 25
-    if days_to_renewal <= 30:
-        return 18
-    if days_to_renewal <= 60:
-        return 10
-    if days_to_renewal <= 90:
-        return 5
-    return 0
+STALLED_COLUMN_DAYS = 14
 
 
 class BookContext:
@@ -50,12 +43,14 @@ class BookContext:
     def __init__(self, session: Session):
         self.session = session
         self.accounts = session.exec(select(Account)).all()
-        active = [a for a in self.accounts if a.lifecycle_stage != "closed"]
-        self.arr_ladder = sorted(a.arr for a in active) or [0]
-
-        self.renewal_by_account: dict[str, date] = {}
-        for sub in session.exec(select(Subscription)).all():
-            self.renewal_by_account[sub.account_id] = sub.renewal_date
+        self.quote_ladder = sorted(a.quoted_total for a in self.accounts) or [0]
+        self.pnl_by_account: dict[str, dict] = {
+            a.id: pnl_engine.compute(a) for a in self.accounts
+        }
+        self.size_band_by_account: dict[str, str] = {
+            a.id: health_engine.size_band_for(a.quoted_total, self.quote_ladder)
+            for a in self.accounts
+        }
 
         self.open_high_risks: dict[str, int] = {}
         for r in session.exec(select(Risk).where(Risk.status == "open")).all():
@@ -88,47 +83,54 @@ class BookContext:
             a.id: health_engine.velocity(session, a.id) for a in self.accounts
         }
 
-    def arr_percentile(self, arr: int) -> float:
-        ladder = self.arr_ladder
-        below = sum(1 for v in ladder if v < arr)
-        return below / max(1, len(ladder) - 1) if len(ladder) > 1 else 1.0
-
-    def days_to_renewal(self, account_id: str) -> Optional[int]:
-        rd = self.renewal_by_account.get(account_id)
-        return None if rd is None else (rd - date.today()).days
-
-    def top_quartile_arr(self) -> int:
-        ladder = self.arr_ladder
+    def top_quartile_quote(self) -> int:
+        ladder = self.quote_ladder
         if not ladder:
             return 0
         idx = int(round(0.75 * (len(ladder) - 1)))
         return ladder[idx]
 
+    def days_in_column(self, account: Account) -> Optional[int]:
+        if not account.column_changed_at:
+            return None
+        return (datetime.utcnow() - account.column_changed_at).days
+
 
 def score_account(ctx: BookContext, account: Account) -> dict:
     delta = ctx.velocity_by_account.get(account.id)
-    dtr = ctx.days_to_renewal(account.id)
+    parts = ctx.pnl_by_account.get(account.id) or pnl_engine.compute(account)
+    margin_pct = parts["margin_pct"]
 
     days_since_contact = None
     if account.last_contact_at:
         days_since_contact = (datetime.utcnow() - account.last_contact_at).days
+    neglect_window = health_engine.MODE_THRESHOLDS.get(
+        account.mode, health_engine.MODE_THRESHOLDS["customer"]
+    )["neglect_days"]
 
     band = health_engine.effective_band(account)
+    days_in_column = ctx.days_in_column(account)
 
     band_w = float(BAND_WEIGHTS.get(band, 0))
     velocity_w = float(min(20, max(0, -(delta or 0))))
-    renewal_w = float(renewal_urgency(dtr))
-    arr_w = round(ctx.arr_percentile(account.arr) * 15, 1)
+
+    # A null margin means nothing has been billed yet, which is not a risk
+    # signal. Only a known-thin or negative margin scores.
+    margin_w = 15.0 if margin_pct is not None and margin_pct < pnl_engine.MARGIN_AMBER else 0.0
+
+    stalled_w = (
+        10.0 if days_in_column is not None and days_in_column > STALLED_COLUMN_DAYS else 0.0
+    )
     escalation_w = float(min(20, 12 * ctx.open_high_risks.get(account.id, 0)))
     neglect_w = (
-        round(min((days_since_contact - 14) / 2, 10), 1)
-        if days_since_contact is not None and days_since_contact > 14
+        round(min((days_since_contact - neglect_window) / 2, 10), 1)
+        if days_since_contact is not None and days_since_contact > neglect_window
         else 0.0
     )
     overdue_w = float(min(12, 3 * ctx.overdue_by_account.get(account.id, 0)))
 
     total = round(
-        band_w + velocity_w + renewal_w + arr_w + escalation_w + neglect_w + overdue_w, 1
+        band_w + velocity_w + margin_w + stalled_w + escalation_w + neglect_w + overdue_w, 1
     )
 
     return {
@@ -136,13 +138,25 @@ def score_account(ctx: BookContext, account: Account) -> dict:
         "terms": [
             {"label": "Health band", "detail": health_engine.BAND_LABELS[band], "value": band_w},
             {"label": "Health velocity", "detail": _delta_text(delta), "value": velocity_w},
-            {"label": "Renewal urgency", "detail": _renewal_text(dtr), "value": renewal_w},
-            {"label": "ARR weight", "detail": f"{int(ctx.arr_percentile(account.arr) * 100)}th pct of book", "value": arr_w},
+            {"label": "Margin risk", "detail": _margin_text(margin_pct), "value": margin_w},
+            {"label": "Stalled in column", "detail": _column_text(days_in_column), "value": stalled_w},
             {"label": "Open escalations", "detail": f"{ctx.open_high_risks.get(account.id, 0)} high-severity", "value": escalation_w},
             {"label": "Neglect", "detail": _contact_text(days_since_contact), "value": neglect_w},
             {"label": "Overdue tasks", "detail": f"{ctx.overdue_by_account.get(account.id, 0)} overdue", "value": overdue_w},
         ],
     }
+
+
+def _margin_text(margin_pct: Optional[float]) -> str:
+    if margin_pct is None:
+        return "nothing billed yet"
+    return f"{margin_pct}% gross margin"
+
+
+def _column_text(days: Optional[int]) -> str:
+    if days is None:
+        return "never moved"
+    return f"{days}d in this column"
 
 
 def _delta_text(delta: Optional[int]) -> str:
@@ -155,14 +169,6 @@ def _delta_text(delta: Optional[int]) -> str:
     return "flat over 30d"
 
 
-def _renewal_text(dtr: Optional[int]) -> str:
-    if dtr is None:
-        return "no subscription"
-    if dtr < 0:
-        return f"lapsed {abs(dtr)}d ago"
-    return f"renews in {dtr}d"
-
-
 def _contact_text(days: Optional[int]) -> str:
     if days is None:
         return "never contacted"
@@ -173,8 +179,6 @@ def needs_attention(ctx: BookContext) -> list[tuple[Account, dict]]:
     """Active accounts at or above the threshold, worst first. Pinned always lead."""
     rows = []
     for a in ctx.accounts:
-        if a.lifecycle_stage == "closed":
-            continue
         scored = score_account(ctx, a)
         if a.pinned or scored["score"] >= ATTENTION_THRESHOLD:
             rows.append((a, scored))

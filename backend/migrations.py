@@ -7,6 +7,18 @@ when v2 boots — without this it would fail on the first query for a column tha
 no longer exists.
 
 SQLite >= 3.35 supports ALTER TABLE ... DROP COLUMN, so this runs in place.
+
+STANDING RULE FOR EVERY FUTURE MIGRATION
+----------------------------------------
+Drop dependent indexes before dropping any column. SQLite refuses
+ALTER TABLE ... DROP COLUMN while an index still references the column, and the
+error surfaces at the DROP, not at the index. Use _drop_indexes_for().
+
+Corollary, learned the same way: ALTER TABLE auto-commits, plain UPDATE does
+not. Commit every backfill BEFORE any DDL, or a later DDL failure rolls the
+backfill back while leaving the new columns in place — a half-migrated database
+that looks migrated. Prefer columns with no index where a later migration is
+expected (see account.column).
 """
 from __future__ import annotations
 
@@ -133,8 +145,16 @@ def migrate(session: Session) -> dict:
 
     current = _ensure_meta(session)
     account_cols = _columns(session, "account")
-    if current >= SCHEMA_VERSION and "lifecycle_stage" not in account_cols:
-        return {"migrated": False, "reason": f"already at v{current}"}
+
+    # The presence of the v1 column is the trigger, not the version number.
+    # init_db() runs create_all before this, so on a fresh database the account
+    # table already exists in its v2 shape — version alone would misread that as
+    # "needs migrating" and then query a column that was never there.
+    if "lifecycle_stage" not in account_cols:
+        if current < SCHEMA_VERSION:
+            _set_version(session, SCHEMA_VERSION)
+            session.commit()
+        return {"migrated": False, "reason": "already on the v2 schema"}
 
     log.warning("Migrating Signal CS database v%s -> v%s", current, SCHEMA_VERSION)
     notes: list[str] = []

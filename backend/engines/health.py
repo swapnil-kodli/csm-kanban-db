@@ -30,36 +30,62 @@ from models import (
 WEIGHTS = {"usage": 0.40, "engagement": 0.25, "support": 0.20, "sentiment": 0.15}
 DEFAULT_SENTIMENT = 70
 
-# Thresholds relative to the account, keyed by segment (spec 03 §4, 01 §7).
-# An SMB is judged more sensitively on usage than a multi-product enterprise;
-# an enterprise is judged more sensitively on health slide and renewal runway.
-SEGMENT_THRESHOLDS: dict[str, dict[str, float]] = {
-    "enterprise": {
-        "health_drop": -12,          # a big logo sliding is the bigger story
-        "usage_decline_ratio": 0.70, # multi-product noise is normal
-        "no_contact_days": 14,
-        "renewal_task_days": (60, 30),
-        "neglect_days": 14,
+# Thresholds relative to the account, on two axes.
+#
+# MAGNITUDE thresholds key on `size_band`, derived from where the account's
+# quoted_total falls in the book. That is the original intent: a 15% usage drop
+# means something different on a small deal than on a large one. It is not about
+# pilot status, which says nothing about deal size.
+#
+# The NO-CONTACT window keys on `mode` instead, and only that: a fragile six-week
+# pilot dies of silence faster than an established customer does.
+SIZE_THRESHOLDS: dict[str, dict[str, float]] = {
+    "large": {
+        "health_drop": -12,           # a big engagement sliding is the bigger story
+        "usage_decline_ratio": 0.70,  # more surface area, more normal noise
     },
-    "mid_market": {
+    "mid": {
         "health_drop": -15,
         "usage_decline_ratio": 0.75,
-        "no_contact_days": 14,
-        "renewal_task_days": (60, 30),
-        "neglect_days": 14,
     },
-    "smb": {
-        "health_drop": -20,   # small user counts make SMB scores noisier
-        "usage_decline_ratio": 0.85, # a 15% drop on a single-product SMB matters
-        "no_contact_days": 14,
-        "renewal_task_days": (30,),  # lighter-touch renewal motion
-        "neglect_days": 14,
+    "small": {
+        "health_drop": -18,
+        "usage_decline_ratio": 0.85,  # a 15% drop on a small deal matters
     },
 }
 
+# Silence tolerance by engagement mode.
+MODE_THRESHOLDS: dict[str, dict[str, float]] = {
+    "pilot": {"no_contact_days": 7, "neglect_days": 7},
+    "customer": {"no_contact_days": 14, "neglect_days": 14},
+}
 
-def thresholds(segment: str) -> dict:
-    return SEGMENT_THRESHOLDS.get(segment, SEGMENT_THRESHOLDS["mid_market"])
+SIZE_BANDS = ("small", "mid", "large")
+
+
+def size_band_for(quoted_total: int, ladder: list[int]) -> str:
+    """Which third of the book's quoted values this account sits in.
+
+    Quantiles, not fixed rupee cuts, so the bands stay meaningful as the book
+    grows. A book too small to have quantiles is all `mid`.
+    """
+    ordered = sorted(v for v in ladder if v > 0)
+    if len(ordered) < 3 or quoted_total <= 0:
+        return "mid"
+    lower = ordered[len(ordered) // 3]
+    upper = ordered[2 * len(ordered) // 3]
+    if quoted_total <= lower:
+        return "small"
+    if quoted_total >= upper:
+        return "large"
+    return "mid"
+
+
+def thresholds(size_band: str, mode: str) -> dict:
+    """Merged view of both axes for one account."""
+    merged = dict(SIZE_THRESHOLDS.get(size_band, SIZE_THRESHOLDS["mid"]))
+    merged.update(MODE_THRESHOLDS.get(mode, MODE_THRESHOLDS["customer"]))
+    return merged
 
 
 def _clamp(v: float, lo: float = 0, hi: float = 100) -> float:
@@ -126,7 +152,8 @@ def engagement_component(
         days_since = max(0, (horizon - last).days)
     else:
         days_since = 90
-    recency = _clamp(100 - max(0, days_since - 7) * 3)
+    grace = MODE_THRESHOLDS.get(account.mode, MODE_THRESHOLDS["customer"])["neglect_days"] // 2
+    recency = _clamp(100 - max(0, days_since - grace) * 3)
 
     meetings = len([a for a in acts if a.type in ("meeting", "qbr")])
     meeting_score = _clamp(meetings * 20)

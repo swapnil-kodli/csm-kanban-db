@@ -5,9 +5,22 @@ a task someone owns. Anything that fails that test changes board state instead.
 There is no bell icon and no unread count anywhere in this product.
 
 Idempotent by construction: never a second *open* task for the same
-(account_id, rule_key) pair. Thresholds are relative to the account via
-`SEGMENT_THRESHOLDS` — a 15% usage drop on a single-product SMB is not the same
-event as on a multi-product enterprise.
+(account_id, rule_key) pair.
+
+Thresholds are relative to the account on two axes (see engines/health.py):
+magnitude keys on `size_band`, derived from quoted_total quantiles across the
+book, because a 15% usage drop means something different on a small deal than a
+large one; the no-contact window keys on `mode`, because a fragile pilot dies of
+silence faster than an established customer.
+
+Task-creating rules:  health_drop · high_value_at_risk · margin_negative ·
+                      champion_departed · usage_decline · escalation_open
+State-only signals:   no_contact · stalled_handoff · column_stalled
+
+`renewal_90/60/30` are gone with the renewal model. `milestone_overdue` is gone
+with the milestone table and is deliberately NOT replaced: `column_stalled` on
+the onboarding column already covers that visibility gap, and a second stall
+rule would double-fire on the same account.
 """
 from __future__ import annotations
 
@@ -16,9 +29,10 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
-from models import Account, Contact, Milestone, Risk, Subscription, Task, UsageMetric, User
+from models import Account, Contact, Risk, Task, UsageMetric, User
 from engines import health as health_engine
-from engines.attention import BookContext
+from engines import pnl as pnl_engine
+from engines.attention import STALLED_COLUMN_DAYS, BookContext
 
 CRITICAL = "critical"
 IMPORTANT = "important"
@@ -99,25 +113,29 @@ def usage_decline_ratio(session: Session, account_id: str) -> Optional[float]:
 
 def state_flags(ctx: BookContext, account: Account) -> dict:
     """Info-tier signals. These change board state; they never create a task."""
-    dtr = ctx.days_to_renewal(account.id)
     days_since_contact = (
         (datetime.utcnow() - account.last_contact_at).days
         if account.last_contact_at
         else None
     )
-    th = health_engine.thresholds(account.segment)
+    size_band = ctx.size_band_by_account.get(account.id, "mid")
+    th = health_engine.thresholds(size_band, account.mode)
+    days_in_column = ctx.days_in_column(account)
 
+    # v2 keeps the v1 handoff treatment, still keyed to the entry column.
     stalled_handoff = False
-    if account.lifecycle_stage == "ready_for_onboarding" and account.handoff_received_at:
+    if account.column == "ready_for_onboarding" and account.handoff_received_at:
         stalled_handoff = (datetime.utcnow() - account.handoff_received_at).days > 3
 
     return {
-        "renewal_90": dtr is not None and 0 <= dtr <= 90,
         "no_contact": days_since_contact is not None
         and days_since_contact > th["no_contact_days"],
         "stalled_handoff": stalled_handoff,
+        "column_stalled": days_in_column is not None
+        and days_in_column > STALLED_COLUMN_DAYS,
         "days_since_contact": days_since_contact,
-        "days_to_renewal": dtr,
+        "days_in_column": days_in_column,
+        "size_band": size_band,
     }
 
 
@@ -136,27 +154,19 @@ def evaluate(session: Session) -> dict:
     for c in session.exec(select(Contact)).all():
         contacts_by_account.setdefault(c.account_id, []).append(c)
 
-    milestones_by_account: dict[str, list[Milestone]] = {}
-    for m in session.exec(select(Milestone)).all():
-        milestones_by_account.setdefault(m.account_id, []).append(m)
-
     escalations_by_account: dict[str, list[Risk]] = {}
     for r in session.exec(
         select(Risk).where(Risk.status == "open", Risk.type == "escalation")
     ).all():
         escalations_by_account.setdefault(r.account_id, []).append(r)
 
-    top_quartile = ctx.top_quartile_arr()
-    today = date.today()
+    top_quartile = ctx.top_quartile_quote()
 
     for account in ctx.accounts:
-        if account.lifecycle_stage == "closed":
-            continue  # a churned or renewed account is not work in flight
-
-        th = health_engine.thresholds(account.segment)
+        size_band = ctx.size_band_by_account.get(account.id, "mid")
+        th = health_engine.thresholds(size_band, account.mode)
         band = health_engine.effective_band(account)
         delta = ctx.velocity_by_account.get(account.id)
-        dtr = ctx.days_to_renewal(account.id)
 
         def emit(**kw):
             t = _emit(session, account, owner.id, **kw)
@@ -177,18 +187,32 @@ def evaluate(session: Session) -> dict:
                 due_in_days=0,
             )
 
-        if band in ("at_risk", "critical") and account.arr >= top_quartile:
+        if band in ("at_risk", "critical") and account.quoted_total >= top_quartile:
             emit(
                 rule_key="high_value_at_risk",
                 title=f"Run risk playbook — {account.name}",
                 provenance=(
-                    f"Alert: top-quartile account moved to "
+                    f"Alert: top-quartile engagement moved to "
                     f"{health_engine.BAND_LABELS[band]}"
                 ),
                 task_type="risk",
                 bucket="today",
                 priority="critical",
                 due_in_days=0,
+            )
+
+        # A known-negative margin is a commercial emergency; a null margin
+        # (nothing billed yet) is not, and must not fire.
+        margin = ctx.pnl_by_account.get(account.id, {}).get("margin_pct")
+        if margin is not None and pnl_engine.compute(account)["gross_margin"] < 0:
+            emit(
+                rule_key="margin_negative",
+                title=f"Margin underwater — {account.name}",
+                provenance=f"Alert: gross margin negative at {margin}%",
+                task_type="admin",
+                bucket="today",
+                priority="critical",
+                due_in_days=1,
             )
 
         departed_champions = [
@@ -209,23 +233,8 @@ def evaluate(session: Session) -> dict:
             )
 
         # --- important ------------------------------------------------------
-        # Consolidate related signals (research §15): a usage slide on an
-        # account that already carries an open alert task is the same story
-        # told twice. Adding a second to-do is how alert fatigue starts.
-        already_alerted = session.exec(
-            select(Task).where(
-                Task.account_id == account.id,
-                Task.rule_key != None,  # noqa: E711
-                Task.status == "open",
-            )
-        ).first()
-
         ratio = usage_decline_ratio(session, account.id)
-        if (
-            ratio is not None
-            and ratio <= th["usage_decline_ratio"]
-            and not already_alerted
-        ):
+        if ratio is not None and ratio <= th["usage_decline_ratio"]:
             emit(
                 rule_key="usage_decline",
                 title="Investigate sustained usage decline",
@@ -247,33 +256,6 @@ def evaluate(session: Session) -> dict:
                 due_in_days=2,
             )
             break
-
-        for ms in milestones_by_account.get(account.id, []):
-            if ms.status == "pending" and ms.target_date and ms.target_date < today:
-                emit(
-                    rule_key="milestone_overdue",
-                    title=f"Unblock milestone — {ms.label}",
-                    provenance=f"Alert: onboarding milestone overdue ({ms.label})",
-                    task_type="onboarding",
-                    bucket="this_week",
-                    priority="high",
-                    due_in_days=2,
-                )
-                break
-
-        if dtr is not None and dtr >= 0:
-            for threshold_days in sorted(th["renewal_task_days"]):
-                if dtr <= threshold_days:
-                    emit(
-                        rule_key=f"renewal_{threshold_days}",
-                        title=f"Prep renewal — {account.name}",
-                        provenance=f"Alert: renewal in {threshold_days} days",
-                        task_type="renewal",
-                        bucket="this_week",
-                        priority="high" if threshold_days <= 30 else "normal",
-                        due_in_days=min(5, max(1, dtr - 5)),
-                    )
-                    break
 
     session.commit()
     return {"created": len(created), "rules": created}

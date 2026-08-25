@@ -1,10 +1,10 @@
-"""Accounts list, the 360 payload, patches, and manual health override."""
+"""Accounts list, the drawer payload, patches, and manual health override."""
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from db import get_session
@@ -13,26 +13,27 @@ from models import (
     Activity,
     Contact,
     HealthSnapshot,
-    Milestone,
     Risk,
-    Subscription,
     Task,
     UsageMetric,
     User,
 )
-from schemas import AccountPatch, HealthOverrideIn, MilestonePatch
+from schemas import AccountPatch, HealthOverrideIn
 from engines import alerts as alert_engine
 from engines import health as health_engine
+from engines import pnl as pnl_engine
 from engines.attention import BookContext, score_account
 from serializers import (
     BAND_DOTS,
-    SEGMENT_TITLES,
-    STAGE_DOTS,
-    STAGE_TITLES,
-    TASK_TYPE_TITLES,
+    CLIENT_TYPE_TITLES,
+    COLUMN_DOTS,
+    COLUMN_TITLES,
+    COMM_MODE_TITLES,
+    MODE_TITLES,
+    WORKSTREAM_GLYPHS,
+    WORKSTREAM_TITLES,
     account_card,
     account_matches,
-    next_actions_by_account,
     parse_filters,
     task_card,
 )
@@ -48,18 +49,10 @@ def _get(session: Session, account_id: str) -> Account:
 
 
 @router.get("")
-def list_accounts(
-    filters: Optional[str] = None,
-    session: Session = Depends(get_session),
-):
+def list_accounts(filters: Optional[str] = None, session: Session = Depends(get_session)):
     f = parse_filters(filters)
     ctx = BookContext(session)
-    next_actions = next_actions_by_account(session)
-    cards = [
-        account_card(ctx, a, next_actions.get(a.id))
-        for a in ctx.accounts
-        if account_matches(ctx, a, f)
-    ]
+    cards = [account_card(ctx, a) for a in ctx.accounts if account_matches(ctx, a, f)]
     cards.sort(key=lambda c: (not c["pinned"], -c["attention_score"], c["name"]))
     return {"accounts": cards, "count": len(cards)}
 
@@ -70,18 +63,10 @@ def get_account(account_id: str, session: Session = Depends(get_session)):
     ctx = BookContext(session)
     scored = score_account(ctx, account)
     flags = alert_engine.state_flags(ctx, account)
-    next_actions = next_actions_by_account(session)
     owner = session.get(User, account.owner_id)
 
-    contacts = session.exec(
-        select(Contact).where(Contact.account_id == account_id)
-    ).all()
-    subscription = session.exec(
-        select(Subscription).where(Subscription.account_id == account_id)
-    ).first()
-    tasks = session.exec(
-        select(Task).where(Task.account_id == account_id)
-    ).all()
+    contacts = session.exec(select(Contact).where(Contact.account_id == account_id)).all()
+    tasks = session.exec(select(Task).where(Task.account_id == account_id)).all()
     activities = session.exec(
         select(Activity)
         .where(Activity.account_id == account_id)
@@ -95,11 +80,6 @@ def get_account(account_id: str, session: Session = Depends(get_session)):
         .limit(90)
     ).all()
     risks = session.exec(select(Risk).where(Risk.account_id == account_id)).all()
-    milestones = session.exec(
-        select(Milestone)
-        .where(Milestone.account_id == account_id)
-        .order_by(Milestone.sort_index)  # type: ignore[arg-type]
-    ).all()
     usage = session.exec(
         select(UsageMetric)
         .where(UsageMetric.account_id == account_id)
@@ -109,28 +89,32 @@ def get_account(account_id: str, session: Session = Depends(get_session)):
 
     latest = snapshots[0] if snapshots else None
     contacts_by_id = {c.id: c for c in contacts}
-    today = date.today()
-
     override_age = health_engine.override_age_days(account)
+    comm_modes = account.comm_modes or []
 
     return {
-        "card": account_card(ctx, account, next_actions.get(account.id), scored),
+        "card": account_card(ctx, account, scored),
+        # --- Overview panel -------------------------------------------------
         "account": {
             "id": account.id,
             "key": account.key,
             "name": account.name,
-            "segment": account.segment,
-            "segment_label": SEGMENT_TITLES.get(account.segment, account.segment),
             "city": account.city,
-            "lifecycle_stage": account.lifecycle_stage,
-            "lifecycle_label": STAGE_TITLES.get(account.lifecycle_stage, ""),
-            "lifecycle_dot": STAGE_DOTS.get(account.lifecycle_stage, "s-adopting"),
-            "closed_reason": account.closed_reason,
-            "arr": account.arr,
+            "column": account.column,
+            "column_label": COLUMN_TITLES.get(account.column, account.column),
+            "column_dot": COLUMN_DOTS.get(account.column, "s-adopting"),
+            "days_in_column": flags["days_in_column"],
+            "column_stalled": flags["column_stalled"],
+            "workstream": account.workstream,
+            "workstream_label": WORKSTREAM_TITLES.get(account.workstream, account.workstream),
+            "workstream_glyph": WORKSTREAM_GLYPHS.get(account.workstream, "◔"),
+            "mode": account.mode,
+            "mode_label": MODE_TITLES.get(account.mode, account.mode),
+            "client_type": account.client_type,
+            "client_type_label": CLIENT_TYPE_TITLES.get(account.client_type, account.client_type),
+            "size_band": flags["size_band"],
             "tags": account.tags or [],
-            "expansion_flag": account.expansion_flag,
             "pinned": account.pinned,
-            "entitled_seats": account.entitled_seats,
             "owner": {"id": owner.id, "name": owner.name, "initials": owner.initials}
             if owner
             else None,
@@ -141,7 +125,22 @@ def get_account(account_id: str, session: Session = Depends(get_session)):
             if account.last_contact_at
             else None,
             "days_since_contact": flags["days_since_contact"],
+            "no_contact": flags["no_contact"],
+            "stalled_handoff": flags["stalled_handoff"],
         },
+        # --- POC panel ------------------------------------------------------
+        "poc": {
+            "name": account.poc_name,
+            "email": account.poc_email,
+            "phone": account.poc_phone,
+        },
+        # --- Mode of Communication -----------------------------------------
+        "comm_modes": [
+            {"value": m, "label": COMM_MODE_TITLES.get(m, m)} for m in comm_modes
+        ],
+        # Gmail panel renders only when email is a channel and a POC email exists.
+        "show_email_threads": "email" in comm_modes and bool(account.poc_email),
+        # --- Health Check panel ---------------------------------------------
         "health": {
             "score": account.health_score,
             "computed_band": account.health_band,
@@ -152,18 +151,16 @@ def get_account(account_id: str, session: Session = Depends(get_session)):
             ],
             "dot": BAND_DOTS[health_engine.effective_band(account)],
             "velocity": ctx.velocity_by_account.get(account.id),
+            "note": account.health_note,
             "override": (
                 {
                     "band": account.health_manual_override,
-                    "band_label": health_engine.BAND_LABELS[
-                        account.health_manual_override
-                    ],
+                    "band_label": health_engine.BAND_LABELS[account.health_manual_override],
                     "reason": account.health_override_reason,
                     "set_at": account.health_override_at.isoformat()
                     if account.health_override_at
                     else None,
                     "age_days": override_age,
-                    # Overrides never expire silently.
                     "stale": override_age is not None and override_age > 60,
                 }
                 if account.health_manual_override
@@ -185,22 +182,9 @@ def get_account(account_id: str, session: Session = Depends(get_session)):
                 for s in reversed(snapshots)
             ],
         },
+        # --- Costing + PNL panels (computed server-side, never stored) ------
+        "commercials": pnl_engine.compute(account),
         "attention": scored,
-        "subscription": (
-            {
-                "id": subscription.id,
-                "start_date": subscription.start_date.isoformat()
-                if subscription.start_date
-                else None,
-                "renewal_date": subscription.renewal_date.isoformat(),
-                "days_to_renewal": (subscription.renewal_date - today).days,
-                "auto_renew": subscription.auto_renew,
-                "status": subscription.status,
-                "line_items": subscription.line_items or [],
-            }
-            if subscription
-            else None
-        ),
         "contacts": [
             {
                 "id": c.id,
@@ -241,18 +225,6 @@ def get_account(account_id: str, session: Session = Depends(get_session)):
             }
             for r in risks
         ],
-        "milestones": [
-            {
-                "id": m.id,
-                "label": m.label,
-                "status": m.status,
-                "target_date": m.target_date.isoformat() if m.target_date else None,
-                "overdue": bool(
-                    m.status == "pending" and m.target_date and m.target_date < today
-                ),
-            }
-            for m in milestones
-        ],
         "usage": [
             {
                 "date": u.captured_on.isoformat(),
@@ -265,28 +237,65 @@ def get_account(account_id: str, session: Session = Depends(get_session)):
     }
 
 
+@router.get("/{account_id}/email-threads")
+def email_threads(
+    account_id: str, limit: int = 20, session: Session = Depends(get_session)
+):
+    """Always 200 with a state the panel can render. A Gmail outage must never
+    block the drawer from opening or the board from rendering."""
+    from routers.google import fetch_threads
+
+    account = _get(session, account_id)
+    return fetch_threads(session, account, limit)
+
+
 @router.patch("/{account_id}")
 def patch_account(
     account_id: str, payload: AccountPatch, session: Session = Depends(get_session)
 ):
     account = _get(session, account_id)
     data = payload.model_dump(exclude_unset=True)
+
+    previous_mode = account.mode
+    previous_column = account.column
+
     for field, value in data.items():
+        if field in ("quoted_line_items", "cost_items"):
+            value = [v if isinstance(v, dict) else v.model_dump() for v in value]
         setattr(account, field, value)
-    if account.lifecycle_stage != "closed":
-        account.closed_reason = None
-    elif account.closed_reason is None:
-        account.closed_reason = "churned"
-    if account.lifecycle_stage == "ready_for_onboarding" and not account.handoff_received_at:
-        account.handoff_received_at = datetime.utcnow()
+
+    # quoted_total is always derived from the line items — never trusted raw.
+    if "quoted_line_items" in data:
+        account.quoted_total = pnl_engine.quoted_total_from_items(account)
+
+    # Dragging between columns must never touch the workstream: they are
+    # different axes. Only the column's own clock resets.
+    if "column" in data and account.column != previous_column:
+        account.column_changed_at = datetime.utcnow()
+        if account.column == "ready_for_onboarding" and not account.handoff_received_at:
+            account.handoff_received_at = datetime.utcnow()
+
     account.updated_at = datetime.utcnow()
     session.add(account)
+
+    # Promotion from pilot to customer is a milestone worth a timeline entry.
+    if "mode" in data and account.mode != previous_mode:
+        session.add(
+            Activity(
+                account_id=account.id,
+                type="update",
+                occurred_at=datetime.utcnow(),
+                summary=(
+                    f"Engagement moved from {MODE_TITLES.get(previous_mode, previous_mode)} "
+                    f"to {MODE_TITLES.get(account.mode, account.mode)}"
+                ),
+            )
+        )
     session.commit()
 
     health_engine.recompute_account(session, account)
     ctx = BookContext(session)
-    next_actions = next_actions_by_account(session)
-    return {"account": account_card(ctx, account, next_actions.get(account.id))}
+    return {"account": account_card(ctx, account)}
 
 
 @router.post("/{account_id}/health-override")
@@ -302,10 +311,7 @@ def set_health_override(
     session.add(account)
     session.commit()
     session.refresh(account)
-
-    ctx = BookContext(session)
-    next_actions = next_actions_by_account(session)
-    return {"account": account_card(ctx, account, next_actions.get(account.id))}
+    return {"account": account_card(BookContext(session), account)}
 
 
 @router.delete("/{account_id}/health-override")
@@ -318,41 +324,4 @@ def clear_health_override(account_id: str, session: Session = Depends(get_sessio
     session.add(account)
     session.commit()
     session.refresh(account)
-
-    ctx = BookContext(session)
-    next_actions = next_actions_by_account(session)
-    return {"account": account_card(ctx, account, next_actions.get(account.id))}
-
-
-@router.patch("/{account_id}/milestones/{milestone_id}")
-def patch_milestone(
-    account_id: str,
-    milestone_id: str,
-    payload: MilestonePatch,
-    session: Session = Depends(get_session),
-):
-    milestone = session.get(Milestone, milestone_id)
-    if milestone is None or milestone.account_id != account_id:
-        raise HTTPException(status_code=404, detail="Milestone not found")
-    data = payload.model_dump(exclude_unset=True)
-    for field, value in data.items():
-        setattr(milestone, field, value)
-    milestone.updated_at = datetime.utcnow()
-    session.add(milestone)
-    session.commit()
-    session.refresh(milestone)
-    return {
-        "milestone": {
-            "id": milestone.id,
-            "label": milestone.label,
-            "status": milestone.status,
-            "target_date": milestone.target_date.isoformat()
-            if milestone.target_date
-            else None,
-            "overdue": bool(
-                milestone.status == "pending"
-                and milestone.target_date
-                and milestone.target_date < date.today()
-            ),
-        }
-    }
+    return {"account": account_card(BookContext(session), account)}

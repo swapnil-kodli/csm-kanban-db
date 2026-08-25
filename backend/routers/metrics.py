@@ -1,20 +1,17 @@
 """The five my-book counters, and the Needs Attention queue.
 
-Exactly five metrics, all my-book counts, every one clickable and carrying the
-filter it applies. NRR / GRR / churn rate / CLV are deliberately absent: that is
-the executive-dashboard trap (research §17, §21).
+Still exactly five, still all clickable, still my-book counts. NRR / GRR /
+churn / CLV remain deliberately absent — that is the executive-dashboard trap.
 """
 from __future__ import annotations
 
-from datetime import date
-
 from fastapi import APIRouter, Depends, Query
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from db import get_session
-from models import Account, Task
+from engines import pnl as pnl_engine
 from engines.attention import BookContext, needs_attention
-from serializers import account_card, next_actions_by_account
+from serializers import account_card
 
 router = APIRouter(tags=["metrics"])
 
@@ -22,22 +19,23 @@ router = APIRouter(tags=["metrics"])
 @router.get("/metrics")
 def get_metrics(session: Session = Depends(get_session)):
     ctx = BookContext(session)
-    today = date.today()
-    active = [a for a in ctx.accounts if a.lifecycle_stage != "closed"]
+    accounts = ctx.accounts
 
     attention_rows = needs_attention(ctx)
+    pilots = [a for a in accounts if a.mode == "pilot"]
+    customers = [a for a in accounts if a.mode == "customer"]
 
-    renewing = [
+    quoted = sum(a.quoted_total for a in accounts)
+    revenue = sum(int(a.revenue_recognised or 0) for a in accounts)
+    cost = sum(pnl_engine.total_cost(a) for a in accounts)
+    gross_margin = revenue - cost
+    margin_pct = round(gross_margin / revenue * 100, 1) if revenue > 0 else None
+
+    at_risk = [
         a
-        for a in active
-        if (d := ctx.days_to_renewal(a.id)) is not None and 0 <= d <= 30
+        for a in accounts
+        if (a.health_manual_override or a.health_band) in ("at_risk", "critical")
     ]
-    renewal_arr = sum(a.arr for a in renewing)
-
-    open_tasks = session.exec(select(Task).where(Task.status == "open")).all()
-    due_today = [t for t in open_tasks if t.due_date == today]
-    overdue = [t for t in open_tasks if t.due_date < today]
-    oldest_overdue = max(((today - t.due_date).days for t in overdue), default=0)
 
     return {
         "metrics": [
@@ -46,47 +44,41 @@ def get_metrics(session: Session = Depends(get_session)):
                 "label": "Needs Attention",
                 "value": len(attention_rows),
                 "format": "count",
-                "sub": "accounts flagged",
+                "sub": "engagements flagged",
                 "filters": {"attention": True},
-                "view": None,
             },
             {
-                "key": "book_arr",
-                "label": "Book ARR",
-                "value": sum(a.arr for a in active),
-                "format": "inr",
-                "sub": f"{len(active)} accounts",
+                "key": "active_engagements",
+                "label": "Active Engagements",
+                "value": len(accounts),
+                "format": "count",
+                "sub": f"{len(pilots)} pilots · {len(customers)} customers",
                 "filters": {},
-                "view": None,
             },
             {
-                "key": "renewals_30",
-                "label": "Renewals ≤30d",
-                "value": len(renewing),
-                "format": "count",
-                "sub_value": renewal_arr,
-                "sub_format": "inr_at_stake",
-                "sub": "at stake",
-                "filters": {"renewal_window": 30},
-                "view": None,
+                "key": "quoted_value",
+                "label": "Quoted Value",
+                "value": quoted,
+                "format": "inr",
+                "sub": f"{len(accounts)} engagements",
+                "filters": {},
             },
             {
-                "key": "open_tasks",
-                "label": "Open Tasks",
-                "value": len(open_tasks),
-                "format": "count",
-                "sub": f"{len(due_today)} due today",
-                "filters": {"task_status": "open"},
-                "view": "work",
+                "key": "gross_margin",
+                "label": "Gross Margin",
+                "value": gross_margin,
+                "format": "inr",
+                "sub": f"{margin_pct}% margin" if margin_pct is not None else "nothing billed yet",
+                "margin_band": pnl_engine.margin_band(margin_pct),
+                "filters": {"thin_margin": True},
             },
             {
-                "key": "overdue",
-                "label": "Overdue",
-                "value": len(overdue),
+                "key": "at_risk",
+                "label": "At Risk",
+                "value": len(at_risk),
                 "format": "count",
-                "sub": f"oldest {oldest_overdue} days" if overdue else "nothing overdue",
-                "filters": {"overdue": True},
-                "view": "work",
+                "sub": "at risk or critical",
+                "filters": {"bands": ["at_risk", "critical"]},
             },
         ]
     }
@@ -96,14 +88,12 @@ def get_metrics(session: Session = Depends(get_session)):
 def get_attention(
     limit: int = Query(10, ge=1, le=50), session: Session = Depends(get_session)
 ):
-    """Who needs my attention — recomputed on read, worst first."""
     ctx = BookContext(session)
-    next_actions = next_actions_by_account(session)
     rows = needs_attention(ctx)[:limit]
     return {
         "accounts": [
             {
-                **account_card(ctx, account, next_actions.get(account.id), scored),
+                **account_card(ctx, account, scored),
                 "attention_terms": [t for t in scored["terms"] if t["value"]],
             }
             for account, scored in rows

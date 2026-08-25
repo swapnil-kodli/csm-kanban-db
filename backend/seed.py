@@ -20,14 +20,13 @@ from models import (
     Activity,
     Contact,
     HealthSnapshot,
-    Milestone,
     Risk,
     SavedView,
-    Subscription,
     Task,
     UsageMetric,
     User,
 )
+from engines import pnl as pnl_engine
 from engines import health as health_engine
 from engines.attention import refresh_cached_scores
 
@@ -41,7 +40,8 @@ RATES = {
     "Raw Data profiles": 100,
     "Voice AI minutes": 100,
 }
-SEATS_BY_SEGMENT = {"enterprise": 500, "mid_market": 250, "smb": 120}
+# Seat entitlement scales with deal size; the health engine divides by it.
+SEATS_BY_SIZE = {"large": 500, "mid": 250, "small": 120}
 
 USAGE_HISTORY_DAYS = 105       # 90 days of curve + 14 days of warm-up
 SNAPSHOT_DAYS = 90
@@ -52,81 +52,167 @@ def _dt(days_ago: float, hour: int = 10) -> datetime:
 
 
 # --- accounts ----------------------------------------------------------------
-# key, name, segment, city, stage, closed_reason, renewal offset, expansion,
-# handoff days ago, health curve control points [(days_ago, score)]
+# Two axes, both real: `column` is where the engagement sits in the delivery
+# pipeline; `workstream` is what the team is doing on it right now. An account
+# in Approval can still be in Voice AI Calling.
+#
+# Commercials are deliberately uneven: one engagement underwater (DIG-08), one
+# comfortably profitable (SET-07), and several mid-delivery with nothing billed
+# yet so margin_pct reads as unknown rather than as a fake 100%.
 ACCOUNTS = [
     dict(
-        key="SBP-01", name="SBP Group", segment="enterprise", city="Chandigarh",
-        stage="ready_for_onboarding", renewal=365, handoff_days_ago=5,
+        key="SBP-01", name="SBP Group", city="Chandigarh",
+        column="ready_for_onboarding", workstream="bot_making",
+        mode="pilot", client_type="data_plus_voice_ai",
+        handoff_days_ago=5, column_days_ago=5,
         curve=[(90, 78), (0, 78)],
         line_items=[("QLs", 1600), ("Raw Data profiles", 4000)],
+        quoted_days_ago=12, revenue=0, costs=[],
+        poc=("Akash", "akash@sbpgroup.in", "+91 98110 44521"),
+        comm=["whatsapp", "email"],
+        quote_notes="Tricity micro-markets. First leads promised inside 30 days.",
     ),
     dict(
-        key="BRM-02", name="Brick Mentor", segment="mid_market", city="Bengaluru",
-        stage="ready_for_onboarding", renewal=365, handoff_days_ago=1,
+        key="BRM-02", name="Brick Mentor", city="Bengaluru",
+        column="ready_for_onboarding", workstream="bot_making",
+        mode="pilot", client_type="voice_ai_only",
+        handoff_days_ago=1, column_days_ago=1,
         curve=[(90, 75), (0, 75)],
-        line_items=[("VLs", 1200), ("Voice AI minutes", 3000)],
+        line_items=[("Voice AI minutes", 9000)],
+        quoted_days_ago=9, revenue=0, costs=[],
+        poc=("Ankit", "ankit@brickmentor.in", "+91 99024 71180"),
+        comm=["email"],
+        quote_notes="Six-week Voice AI pilot before any data commitment.",
     ),
     dict(
-        key="SQY-03", name="Square Yards", segment="enterprise", city="Gurugram",
-        stage="onboarding", renewal=330,
+        key="SQY-03", name="Square Yards", city="Gurugram",
+        column="onboarding", workstream="data_procurement",
+        mode="customer", client_type="data_plus_voice_ai",
+        column_days_ago=22,
         curve=[(90, 74), (30, 74), (0, 68)],
         line_items=[("QLs", 3000), ("VLs", 2000)],
+        quoted_days_ago=61, revenue=1000000,
+        costs=[("Data procurement", 430000), ("Engineering time", 240000), ("Infra", 60000)],
+        poc=("Abhay", "abhay@squareyards.in", "+91 98735 10022"),
+        comm=["whatsapp", "email"],
+        quote_notes="NCR run-rate of 3,000 QLs with a Noida VLs pilot.",
     ),
     dict(
-        key="PRE-04", name="Prestige Group", segment="enterprise", city="Bengaluru",
-        stage="renewal", renewal=18,
+        key="PRE-04", name="Prestige Group", city="Bengaluru",
+        column="approval", workstream="voice_ai_calling",
+        mode="customer", client_type="data_plus_voice_ai",
+        column_days_ago=9,
         curve=[(90, 76), (30, 76), (0, 62)],
         line_items=[("QLs", 2400), ("Voice AI minutes", 12000)],
+        quoted_days_ago=74, revenue=1800000,
+        costs=[("Data procurement", 620000), ("Voice minutes", 410000), ("Engineering time", 300000)],
+        poc=("Akash Rao", "akash.rao@prestige.in", "+91 98450 33127"),
+        comm=["whatsapp", "email"],
+        quote_notes="Calling desk unstaffed — minutes burn is a third of plan.",
     ),
     dict(
-        key="NFS-05", name="Next Foot Steps", segment="mid_market", city="Pune",
-        stage="adopting", renewal=210, expansion=True,
+        key="NFS-05", name="Next Foot Steps", city="Pune",
+        column="working", workstream="data_procurement",
+        mode="customer", client_type="data_plus_voice_ai",
+        column_days_ago=31,
         curve=[(90, 77), (30, 77), (0, 81)],
         line_items=[("SLs", 1000), ("Raw Data profiles", 3000)],
+        quoted_days_ago=52, revenue=620000,
+        costs=[("Data procurement", 210000), ("Engineering time", 120000)],
+        poc=("Pratik", "pratik@nextfootsteps.in", "+91 90280 66194"),
+        comm=["email"],
+        quote_notes="Pune resale desk. Expansion conversation open on VLs.",
     ),
     dict(
-        key="HOU-06", name="Houzay", segment="mid_market", city="Srinagar",
-        stage="adopting", renewal=150,
+        key="HOU-06", name="Houzay", city="Srinagar",
+        column="working", workstream="voice_ai_calling",
+        mode="customer", client_type="voice_ai_only",
+        column_days_ago=19,
         curve=[(90, 67), (30, 67), (0, 58)],
         line_items=[("Voice AI minutes", 7000)],
+        quoted_days_ago=48, revenue=430000,
+        costs=[("Voice minutes", 290000), ("Infra", 55000)],
+        poc=("Sunil Handoo", "sunil@houzay.in", "+91 70061 20845"),
+        comm=["whatsapp"],
+        quote_notes="Single-product Voice AI. Valley coverage only.",
     ),
     dict(
-        key="SET-07", name="Settlin", segment="smb", city="Bengaluru",
-        stage="healthy", renewal=240,
+        key="SET-07", name="Settlin", city="Bengaluru",
+        column="launch", workstream="voice_ai_calling",
+        mode="customer", client_type="voice_ai_only",
+        column_days_ago=40,
         curve=[(90, 87), (30, 86), (0, 88)],
         line_items=[("VLs", 1000)],
+        quoted_days_ago=96, revenue=500000,
+        costs=[("Voice minutes", 120000), ("Infra", 35000), ("Engineering time", 60000)],
+        poc=("Ashish", "ashish@settlin.in", "+91 99866 41230"),
+        comm=["email"],
+        quote_notes="Quiet, well-run. Best margin on the board.",
     ),
     dict(
-        key="DIG-08", name="Diggaj Realty", segment="smb", city="Ahmedabad",
-        stage="adopting", renewal=190,
+        key="DIG-08", name="Diggaj Realty", city="Ahmedabad",
+        column="working", workstream="data_procurement",
+        mode="customer", client_type="data_plus_voice_ai",
+        column_days_ago=26,
         curve=[(90, 55), (30, 55), (0, 44)],
         line_items=[("QLs", 900), ("Raw Data profiles", 1000)],
+        quoted_days_ago=70, revenue=380000,
+        costs=[("Data procurement", 340000), ("Engineering time", 190000), ("Infra", 45000)],
+        poc=("Dhaval", "dhaval@diggaj.in", "+91 98255 70413"),
+        comm=["whatsapp", "email"],
+        quote_notes="Re-scoped twice after lead-quality complaints. Underwater.",
     ),
     dict(
-        key="KRH-09", name="Krishna Homes", segment="smb", city="Bhopal",
-        stage="healthy", renewal=280,
+        key="KRH-09", name="Krishna Homes", city="Bhopal",
+        column="launch", workstream="voice_ai_calling",
+        mode="customer", client_type="voice_ai_only",
+        column_days_ago=35,
         curve=[(90, 79), (0, 79)],
         line_items=[("SLs", 700)],
+        quoted_days_ago=88, revenue=350000,
+        costs=[("Voice minutes", 95000), ("Infra", 28000), ("Engineering time", 70000)],
+        poc=("Ashish Sharma", "ashish@krishnahomes.in", "+91 94250 11876"),
+        comm=["whatsapp"],
+        quote_notes="Steady single-city deployment.",
     ),
     dict(
-        key="VPS-10", name="Valuepersqft", segment="smb", city="Bengaluru",
-        stage="renewal", renewal=52,
+        key="VPS-10", name="Valuepersqft", city="Bengaluru",
+        column="approval", workstream="voice_ai_calling",
+        mode="customer", client_type="data_plus_voice_ai",
+        column_days_ago=17,
         curve=[(90, 49), (30, 49), (0, 31)],
         line_items=[("VLs", 600), ("Voice AI minutes", 1500)], last_nps=-60,
         override=("critical", "champion left, budget frozen"),
+        quoted_days_ago=66, revenue=300000,
+        costs=[("Data procurement", 150000), ("Voice minutes", 95000), ("Engineering time", 140000)],
+        poc=("Rahul K", "rahul@valuepersqft.in", "+91 80889 32017"),
+        comm=["email"],
+        quote_notes="Sign-off stalled since Sanjay's exit.",
     ),
     dict(
-        key="PRO-11", name="Prospen Estates", segment="mid_market", city="Hyderabad",
-        stage="onboarding", renewal=350,
+        key="PRO-11", name="Prospen Estates", city="Hyderabad",
+        column="onboarding", workstream="bot_making",
+        mode="pilot", client_type="data_plus_voice_ai",
+        column_days_ago=11,
         curve=[(90, 68), (30, 68), (0, 71)],
         line_items=[("QLs", 800), ("Raw Data profiles", 2000)],
+        quoted_days_ago=30, revenue=0, costs=[("Engineering time", 90000)],
+        poc=("Indra", "indra@prospen.in", "+91 91004 55362"),
+        comm=["whatsapp", "email"],
+        quote_notes="Hyderabad pilot, milestones on track.",
     ),
     dict(
-        key="FBP-12", name="Full Basket Property", segment="smb", city="Mumbai",
-        stage="closed", closed_reason="churned", renewal=-20,
-        curve=[(90, 43), (30, 43), (0, 22)],
-        line_items=[("SLs", 400), ("Voice AI minutes", 1000)], last_nps=-100,
+        key="FBP-12", name="Full Basket Property", city="Mumbai",
+        column="launch", workstream="voice_ai_calling",
+        mode="pilot", client_type="voice_ai_only",
+        column_days_ago=48,
+        curve=[(90, 43), (30, 43), (0, 22)], last_nps=-100,
+        line_items=[("Voice AI minutes", 3000)],
+        quoted_days_ago=95, revenue=300000,
+        costs=[("Voice minutes", 210000), ("Engineering time", 130000)],
+        poc=("Manish", "manish@fullbasket.in", "+91 98201 74408"),
+        comm=["email"],
+        quote_notes="Pilot ran long; margin thin and health falling.",
     ),
 ]
 
@@ -156,21 +242,6 @@ RISKS = [
     ("FBP-12", "payment", "high", "Non-payment at cancellation, contract terminated", 26),
     ("FBP-12", "other", "high", "Budget pulled for the category", 40),
 ]
-
-MILESTONE_LABELS = [
-    "Kickoff scheduled",
-    "Data handoff complete",
-    "Integration live",
-    "First value delivered",
-    "Onboarding complete",
-]
-# account key -> (done_count, overdue_index or None)
-MILESTONE_PLAN = {
-    "SQY-03": (2, 2),
-    "PRO-11": (2, None),
-    "SBP-01": (0, None),
-    "BRM-02": (0, None),
-}
 
 # account key -> [(days_ago, type, summary, body)]
 ACTIVITIES = {
@@ -261,12 +332,12 @@ TASKS = [
      "Alert: escalation opened — Lead delivery quality complaints, 3 weeks unresolved",
      "escalation_open", None),
 
-    ("this_week", "PRE-04", "Prep renewal deck", "renewal", "high", 3,
-     "Alert: renewal in 30 days", "renewal_30", None),
-    ("this_week", "SQY-03", "Chase integration milestone", "onboarding", "high", -3,
-     "Alert: onboarding milestone overdue (Integration live)", "milestone_overdue", None),
+    ("this_week", "PRE-04", "Chase Voice AI staffing plan", "risk", "high", 3,
+     "Alert: usage down 34% over 14d", "usage_decline", None),
+    ("this_week", "SQY-03", "Chase production API keys", "onboarding", "high", -3,
+     None, None, None),
     ("this_week", "HOU-06", "Re-engage — no contact 19d", "checkin", "normal", 2, None, None, None),
-    ("this_week", "NFS-05", "Scope expansion — VLs add-on", "expansion", "normal", 4, None, None, None),
+    ("this_week", "NFS-05", "Scope VLs add-on for Pune desk", "expansion", "normal", 4, None, None, None),
     ("this_week", "BRM-02", "Send onboarding welcome pack", "onboarding", "normal", 1, None, None, None),
 
     ("follow_up", "SET-07", "Quarterly check-in", "checkin", "normal", 12, None, None, None),
@@ -277,19 +348,19 @@ TASKS = [
     ("waiting", "SQY-03", "Waiting on client API keys", "onboarding", "normal", 5, None, None, None),
     ("waiting", "DIG-08", "Waiting on product fix ETA", "escalation", "normal", 6, None, None, None),
 
-    ("done", "PRE-04", "Log Q2 QBR outcomes", "renewal", "normal", -2, None, None, 2),
+    ("done", "PRE-04", "Log Q2 QBR outcomes", "checkin", "normal", -2, None, None, 2),
     ("done", "SET-07", "Send usage summary", "checkin", "normal", -4, None, None, 4),
     ("done", "NFS-05", "Share VLs pricing sheet", "expansion", "normal", -6, None, None, 6),
 ]
 
 SAVED_VIEWS = [
-    ("My At-Risk", {"bands": ["at_risk", "critical"]}, True),
-    ("Renewals in 30", {"renewal_window": 30}, True),
-    ("Needs Follow-Up", {"overdue": True}, False),
-    ("No Contact Recently", {"last_contact_gt": 14}, False),
-    ("High Value", {"high_value": True}, False),
-    ("Onboarding", {"stages": ["ready_for_onboarding", "onboarding"]}, False),
-    ("Expansion Opportunities", {"expansion": True}, False),
+    ("All Pilots", {"modes": ["pilot"]}, True),
+    ("Customers", {"modes": ["customer"]}, True),
+    ("In Data Procurement", {"workstreams": ["data_procurement"]}, False),
+    ("Awaiting Approval", {"columns": ["approval"]}, False),
+    ("At Risk", {"bands": ["at_risk", "critical"]}, True),
+    ("Negative Margin", {"negative_margin": True}, True),
+    ("Stalled Handoffs", {"stalled_handoff": True}, False),
 ]
 
 
@@ -365,20 +436,34 @@ def seed_if_empty(session: Session) -> bool:
             {"offering": offering, "qty": qty, "rate": RATES[offering]}
             for offering, qty in spec["line_items"]
         ]
-        arr = sum(li["qty"] * li["rate"] for li in line_items)  # never trust the client
+        # quoted_total is always derived, never written by hand.
+        quoted_total = sum(li["qty"] * li["rate"] for li in line_items)
+        cost_items = [
+            {"label": label, "amount": amount} for label, amount in spec.get("costs", [])
+        ]
+        poc_name, poc_email, poc_phone = spec["poc"]
         account = Account(
             key=spec["key"],
             name=spec["name"],
-            segment=spec["segment"],
             city=spec["city"],
-            lifecycle_stage=spec["stage"],
-            closed_reason=spec.get("closed_reason"),
-            arr=arr,
+            column=spec["column"],
+            workstream=spec["workstream"],
+            column_changed_at=_dt(spec.get("column_days_ago", 1)),
+            mode=spec["mode"],
+            client_type=spec["client_type"],
             owner_id=csm.id,
-            entitled_seats=SEATS_BY_SEGMENT[spec["segment"]],
             last_nps=spec.get("last_nps"),
-            expansion_flag=spec.get("expansion", False),
             tags=[],
+            poc_name=poc_name,
+            poc_email=poc_email,
+            poc_phone=poc_phone,
+            comm_modes=spec.get("comm", ["email"]),
+            quoted_total=quoted_total,
+            quoted_line_items=line_items,
+            quoted_at=TODAY - timedelta(days=spec.get("quoted_days_ago", 30)),
+            quote_notes=spec.get("quote_notes"),
+            revenue_recognised=spec.get("revenue", 0),
+            cost_items=cost_items,
             handoff_received_at=(
                 _dt(spec["handoff_days_ago"]) if spec.get("handoff_days_ago") else None
             ),
@@ -387,16 +472,12 @@ def seed_if_empty(session: Session) -> bool:
         session.flush()
         by_key[spec["key"]] = account
 
-        session.add(
-            Subscription(
-                account_id=account.id,
-                start_date=TODAY + timedelta(days=spec["renewal"] - 365),
-                renewal_date=TODAY + timedelta(days=spec["renewal"]),
-                auto_renew=spec["stage"] != "closed",
-                status="churned" if spec["stage"] == "closed" else "active",
-                line_items=line_items,
-            )
-        )
+    # Seat entitlement follows deal size, which the health engine divides by.
+    quote_ladder = [a.quoted_total for a in by_key.values()]
+    for account in by_key.values():
+        band = health_engine.size_band_for(account.quoted_total, quote_ladder)
+        account.entitled_seats = SEATS_BY_SIZE[band]
+        session.add(account)
 
     for key, name, role, champion, buyer, status in CONTACTS:
         slug = "".join(ch for ch in name.split()[0].lower() if ch.isalpha())
@@ -425,24 +506,6 @@ def seed_if_empty(session: Session) -> bool:
                 opened_at=_dt(days_ago),
             )
         )
-
-    for key, (done_count, overdue_idx) in MILESTONE_PLAN.items():
-        for i, label in enumerate(MILESTONE_LABELS):
-            if i < done_count:
-                status, target = "done", TODAY - timedelta(days=20 - i * 5)
-            elif overdue_idx is not None and i == overdue_idx:
-                status, target = "pending", TODAY - timedelta(days=6)
-            else:
-                status, target = "pending", TODAY + timedelta(days=7 + (i - done_count) * 12)
-            session.add(
-                Milestone(
-                    account_id=by_key[key].id,
-                    label=label,
-                    status=status,
-                    target_date=target,
-                    sort_index=float(i),
-                )
-            )
 
     contacts_by_account = {}
     for c in session.exec(select(Contact)).all():

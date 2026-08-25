@@ -65,7 +65,10 @@ class Account(Stamped, table=True):
     name: str = Field(index=True)
 
     # --- the two axes ------------------------------------------------------
-    column: str = Field(default="ready_for_onboarding", index=True)
+    # Plain str: no DB enum, no CHECK, and deliberately NO index. v3 converts
+    # this to column_id against a board_column table, and an index on a column
+    # blocks ALTER TABLE ... DROP COLUMN in SQLite.
+    column: str = Field(default="ready_for_onboarding")
     workstream: str = Field(default="bot_making", index=True)
     column_changed_at: Optional[datetime] = None        # drives `column_stalled`
 

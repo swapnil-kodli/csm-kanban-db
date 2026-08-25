@@ -8,10 +8,13 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-Segment = Literal["enterprise", "mid_market", "smb"]
-LifecycleStage = Literal[
-    "ready_for_onboarding", "onboarding", "adopting", "healthy", "renewal", "closed"
+BoardColumn = Literal[
+    "ready_for_onboarding", "onboarding", "working", "approval", "launch"
 ]
+Workstream = Literal["bot_making", "data_procurement", "voice_ai_calling"]
+Mode = Literal["pilot", "customer"]
+ClientType = Literal["voice_ai_only", "data_plus_voice_ai"]
+CommMode = Literal["whatsapp", "email"]
 HealthBand = Literal["healthy", "watch", "at_risk", "critical"]
 TaskBucket = Literal["today", "this_week", "follow_up", "waiting", "done"]
 TaskStatus = Literal["open", "done"]
@@ -20,8 +23,7 @@ TaskType = Literal[
 ]
 TaskPriority = Literal["critical", "high", "normal"]
 ActivityType = Literal["email", "call", "meeting", "note", "qbr", "update"]
-BoardView = Literal["work", "health", "lifecycle"]
-GroupBy = Literal["none", "priority", "segment", "renewal_month"]
+GroupBy = Literal["none", "priority", "mode", "client_type", "workstream"]
 
 
 class HealthResponse(BaseModel):
@@ -29,16 +31,43 @@ class HealthResponse(BaseModel):
     version: str
 
 
+class LineItem(BaseModel):
+    offering: str
+    qty: int = Field(ge=0)
+    rate: int = Field(ge=0)
+
+
+class CostItem(BaseModel):
+    label: str = Field(min_length=1, max_length=80)
+    amount: int = Field(ge=0)
+
+
 class AccountPatch(BaseModel):
     name: Optional[str] = None
-    segment: Optional[Segment] = None
     city: Optional[str] = None
-    lifecycle_stage: Optional[LifecycleStage] = None
-    closed_reason: Optional[Literal["renewed", "churned"]] = None
-    expansion_flag: Optional[bool] = None
+    column: Optional[BoardColumn] = None
+    workstream: Optional[Workstream] = None
+    mode: Optional[Mode] = None
+    client_type: Optional[ClientType] = None
     tags: Optional[list[str]] = None
     pinned: Optional[bool] = None
     last_nps: Optional[int] = None
+    health_note: Optional[str] = None
+
+    # POC
+    poc_name: Optional[str] = None
+    poc_email: Optional[str] = None
+    poc_phone: Optional[str] = None
+    comm_modes: Optional[list[CommMode]] = None
+
+    # costing — quoted_total is derived from the line items, never accepted raw
+    quoted_line_items: Optional[list[LineItem]] = None
+    quoted_at: Optional[date] = None
+    quote_notes: Optional[str] = None
+
+    # pnl
+    revenue_recognised: Optional[int] = Field(default=None, ge=0)
+    cost_items: Optional[list[CostItem]] = None
 
 
 class HealthOverrideIn(BaseModel):
@@ -109,8 +138,3 @@ class SavedViewCreate(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     filter_json: dict[str, Any] = Field(default_factory=dict)
     pinned: bool = False
-
-
-class MilestonePatch(BaseModel):
-    status: Optional[Literal["pending", "done"]] = None
-    target_date: Optional[date] = None
