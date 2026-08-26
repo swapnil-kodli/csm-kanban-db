@@ -85,6 +85,10 @@ silent no-op would lie about what was saved.
 
 ## Troubleshooting a deployment
 
+See `WHITE-SCREEN-RUNBOOK.md` for the full playbook on blank-page failures under
+path-based routing — triage commands, the four distinct causes hit during this
+build, and the guards that stop them recurring.
+
 **Blank page, nothing renders.** Check what `index.html` references:
 
 ```bash
