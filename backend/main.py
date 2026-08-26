@@ -31,7 +31,7 @@ def bootstrap() -> None:
     """Create tables, seed when empty, then run the health + alert jobs once."""
     init_db()
     from migrations import migrate
-    from seed import seed_if_empty
+    from seed_demo import demo_seed_enabled, seed_if_empty
 
     with Session(engine) as session:
         # A deployed v1 database is persisted on the compose volume, so it will
@@ -41,7 +41,14 @@ def bootstrap() -> None:
     init_db()  # pick up any table the migration dropped and the model still needs
 
     with Session(engine) as session:
-        seeded = seed_if_empty(session)
+        # A usable board needs an owner and columns even with no clients.
+        from bootstrap import ensure_defaults
+
+        ensure_defaults(session)
+
+    with Session(engine) as session:
+        # Production boots empty. The demo fixture is opt-in.
+        seeded = seed_if_empty(session) if demo_seed_enabled() else False
         if not seeded:
             # Existing DB: keep derived state fresh across restarts.
             health_engine.recompute_all(session)

@@ -19,6 +19,8 @@ outranks the formula, always.
 from __future__ import annotations
 
 from datetime import date, datetime
+
+from dbtypes import days_since
 from typing import Optional
 
 from sqlmodel import Session, select
@@ -42,7 +44,16 @@ class BookContext:
 
     def __init__(self, session: Session):
         self.session = session
-        self.accounts = session.exec(select(Account)).all()
+        # Archived clients leave the board and stay out of every metric and
+        # engine. One exclusion here covers the whole scoring surface.
+        self.accounts = session.exec(
+            select(Account).where(Account.archived_at == None)  # noqa: E711
+        ).all()
+        self.archived_count = len(
+            session.exec(
+                select(Account).where(Account.archived_at != None)  # noqa: E711
+            ).all()
+        )
 
         # Column config is read once per request. Behaviour that v2 hardcoded to
         # literal column keys now comes from these rows.
@@ -93,17 +104,24 @@ class BookContext:
             a.id: health_engine.velocity(session, a.id) for a in self.accounts
         }
 
-    def top_quartile_quote(self) -> int:
-        ladder = self.quote_ladder
-        if not ladder:
-            return 0
+    def top_quartile_quote(self) -> Optional[int]:
+        """None when the book is too small for a quartile to mean anything.
+
+        With three clients one is always in the "top quartile" by position
+        alone, so `high_value_at_risk` would fire on whoever happens to be
+        biggest rather than on anyone genuinely large. Callers treat None as
+        "skip this rule" — off, not wrong.
+        """
+        ladder = [v for v in self.quote_ladder if v > 0]
+        if len(ladder) < health_engine.MIN_CLIENTS_FOR_QUANTILES:
+            return None
         idx = int(round(0.75 * (len(ladder) - 1)))
         return ladder[idx]
 
     def days_in_column(self, account: Account) -> Optional[int]:
         if not account.column_changed_at:
             return None
-        return (datetime.utcnow() - account.column_changed_at).days
+        return days_since(account.column_changed_at)
 
     def column_of(self, account: Account) -> Optional[BoardColumn]:
         return self.column_by_id.get(account.column_id)
@@ -126,9 +144,7 @@ def score_account(ctx: BookContext, account: Account) -> dict:
     parts = ctx.pnl_by_account.get(account.id) or pnl_engine.compute(account)
     margin_pct = parts["margin_pct"]
 
-    days_since_contact = None
-    if account.last_contact_at:
-        days_since_contact = (datetime.utcnow() - account.last_contact_at).days
+    days_since_contact = days_since(account.last_contact_at)
     neglect_window = health_engine.MODE_THRESHOLDS.get(
         account.mode, health_engine.MODE_THRESHOLDS["customer"]
     )["neglect_days"]

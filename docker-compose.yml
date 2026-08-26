@@ -2,9 +2,18 @@ services:
   backend:
     build:
       context: ./backend
-    environment:
-      DATABASE_URL: sqlite:////app/data/signal.db
-      APP_VERSION: "1.0.0"
+    # backend/.env holds the credentials (DATABASE_URL, Google OAuth) and is
+    # gitignored. Optional on purpose: `required: false` means the stack still
+    # comes up on a clean checkout with no .env, falling back to the SQLite
+    # defaults below.
+    env_file:
+      - path: ./backend/.env
+        required: false
+    # No `environment:` block. Compose gives it precedence over `env_file`, so
+    # naming DATABASE_URL there — as this file used to — silently beat whatever
+    # backend/.env said and made the file's database setting dead text.
+    # Precedence, verified with `docker compose config`, is:
+    #   backend/.env  >  the image's ENV (Dockerfile)  >  the code default
     volumes:
       - signal-data:/app/data
     expose:

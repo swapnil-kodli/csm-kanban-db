@@ -8,8 +8,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from db import get_session
+from dbtypes import utcnow
+from keygen import next_key
 from models import (
     Account,
+    Activity,
     BoardColumn,
     Contact,
     HealthSnapshot,
@@ -18,7 +21,7 @@ from models import (
     UsageMetric,
     User,
 )
-from schemas import AccountPatch, HealthOverrideIn
+from schemas import AccountCreate, AccountHardDelete, AccountPatch, HealthOverrideIn
 from engines import alerts as alert_engine
 from engines import health as health_engine
 from engines import pnl as pnl_engine
@@ -54,6 +57,246 @@ def list_accounts(filters: Optional[str] = None, session: Session = Depends(get_
     cards = [account_card(ctx, a) for a in ctx.accounts if account_matches(ctx, a, f)]
     cards.sort(key=lambda c: (not c["pinned"], -c["attention_score"], c["name"]))
     return {"accounts": cards, "count": len(cards)}
+
+
+def _entry_column(session: Session) -> BoardColumn:
+    """Where new work lands. Falls back to leftmost when no column is flagged.
+
+    A database that has had its entry flag cleared must not make client creation
+    impossible — the board is still usable, so creation stays usable too.
+    """
+    entry = session.exec(
+        select(BoardColumn).where(
+            BoardColumn.is_default_entry == True,  # noqa: E712
+            BoardColumn.is_archived == False,  # noqa: E712
+        )
+    ).first()
+    if entry:
+        return entry
+    leftmost = sorted(
+        [c for c in session.exec(select(BoardColumn)).all() if not c.is_archived],
+        key=lambda c: c.position,
+    )
+    if not leftmost:
+        raise HTTPException(
+            status_code=409,
+            detail="The board has no columns. Add one in Settings before creating a client.",
+        )
+    return leftmost[0]
+
+
+@router.post("", status_code=201)
+def create_account(payload: AccountCreate, session: Session = Depends(get_session)):
+    """Put a real client on the board.
+
+    Four required fields; everything else is the drawer's job. The key is
+    derived here and never accepted from the client, and the column is the
+    default entry column rather than a choice — the drawer shows Column as
+    read-only, so offering it at create would contradict the drawer.
+    """
+    owner = session.exec(select(User)).first()
+    if owner is None:
+        # bootstrap.ensure_defaults() creates one at boot; this is the guard for
+        # a database someone emptied by hand.
+        raise HTTPException(status_code=409, detail="No CSM user configured.")
+
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Name is required.")
+
+    column = _entry_column(session)
+    now = utcnow()
+
+    account = Account(
+        key=next_key(session, name),
+        name=name,
+        column_id=column.id,
+        column_changed_at=now,
+        # Landing in the entry column IS the handoff, same as a drag into it.
+        handoff_received_at=now if column.is_default_entry else None,
+        workstream=payload.workstream,
+        mode=payload.mode,
+        client_type=payload.client_type,
+        city=(payload.city or "").strip() or None,
+        owner_id=owner.id,
+        tags=payload.tags or [],
+        comm_modes=payload.comm_modes or [],
+        last_contact_at=payload.last_contact_at,
+        quoted_total=payload.quoted_total or 0,
+        quoted_at=payload.quoted_at,
+        quote_notes=payload.quote_notes,
+    )
+    session.add(account)
+
+    poc_name = (payload.primary_contact_name or "").strip()
+    if poc_name:
+        session.add(
+            Contact(
+                account_id=account.id,
+                name=poc_name,
+                role=(payload.primary_contact_role or "").strip(),
+                email=(payload.primary_contact_email or "").strip() or None,
+                phone=(payload.primary_contact_phone or "").strip() or None,
+                is_primary=True,
+            )
+        )
+
+    session.commit()
+    session.refresh(account)
+
+    # A brand-new client has no snapshot, so the board would show the model
+    # default until the next nightly pass. Compute once, now.
+    health_engine.recompute_account(session, account)
+    return {"account": account_card(BookContext(session), account)}
+
+
+# --- soft delete, trash, restore, hard delete --------------------------------
+# Delete is soft everywhere the user can reach it. The only irreversible path is
+# from Trash, behind a typed confirmation.
+
+def _trash_row(session: Session, account: Account) -> dict:
+    """What Trash shows. Deliberately not account_card().
+
+    An archived client is outside BookContext by design, so it has no attention
+    score, no size band and no stall state — those are properties of a live
+    book. Trash shows identity plus the weight of what a hard delete would
+    destroy, which is the only thing that matters at that moment.
+    """
+    column = session.get(BoardColumn, account.column_id)
+    counts = {
+        "contacts": len(
+            session.exec(select(Contact).where(Contact.account_id == account.id)).all()
+        ),
+        "tasks": len(
+            session.exec(select(Task).where(Task.account_id == account.id)).all()
+        ),
+        "snapshots": len(
+            session.exec(
+                select(HealthSnapshot).where(HealthSnapshot.account_id == account.id)
+            ).all()
+        ),
+        "risks": len(
+            session.exec(select(Risk).where(Risk.account_id == account.id)).all()
+        ),
+    }
+    return {
+        "id": account.id,
+        "key": account.key,
+        "name": account.name,
+        "mode": account.mode,
+        "mode_label": MODE_TITLES.get(account.mode, account.mode),
+        "workstream": account.workstream,
+        "workstream_label": WORKSTREAM_TITLES.get(account.workstream, account.workstream),
+        "client_type_label": CLIENT_TYPE_TITLES.get(
+            account.client_type, account.client_type
+        ),
+        "column_label": column.label if column else "Unassigned",
+        "archived_at": account.archived_at.isoformat() if account.archived_at else None,
+        "quoted_total": account.quoted_total,
+        "owns": counts,
+        # Nothing is lost on restore, so the UI can say so plainly.
+        "restorable": True,
+    }
+
+
+@router.get("/trash/list")
+def list_trash(session: Session = Depends(get_session)):
+    """Soft-deleted clients, most recently deleted first.
+
+    Two-segment path, and declared above /accounts/{account_id}, so the
+    parameterised route cannot swallow it. FastAPI matches in declaration
+    order: /accounts/trash alone, declared later, would resolve as an account
+    whose id is the literal string "trash" and 404.
+    """
+    rows = session.exec(
+        select(Account).where(Account.archived_at != None)  # noqa: E711
+    ).all()
+    rows.sort(key=lambda a: a.archived_at or utcnow(), reverse=True)
+    return {"accounts": [_trash_row(session, a) for a in rows], "count": len(rows)}
+
+
+@router.delete("/{account_id}")
+def archive_account(account_id: str, session: Session = Depends(get_session)):
+    """Soft delete. The client leaves every board, engine and metric intact."""
+    account = _get(session, account_id)
+    if account.archived_at is not None:
+        raise HTTPException(status_code=409, detail="Client is already in Trash.")
+    account.archived_at = utcnow()
+    account.pinned = False  # a deleted client must not keep a pinned slot
+    account.updated_at = utcnow()
+    session.add(account)
+    session.commit()
+    session.refresh(account)
+    return {"archived": _trash_row(session, account)}
+
+
+@router.post("/{account_id}/restore")
+def restore_account(account_id: str, session: Session = Depends(get_session)):
+    """Back onto the board, in the column it left from.
+
+    Restoring into a column that has since been archived would put the client
+    somewhere invisible, so that case lands in the entry column instead.
+    """
+    account = _get(session, account_id)
+    if account.archived_at is None:
+        raise HTTPException(status_code=409, detail="Client is not in Trash.")
+
+    column = session.get(BoardColumn, account.column_id)
+    if column is None or column.is_archived:
+        account.column_id = _entry_column(session).id
+        account.column_changed_at = utcnow()
+
+    account.archived_at = None
+    account.updated_at = utcnow()
+    session.add(account)
+    session.commit()
+    session.refresh(account)
+
+    health_engine.recompute_account(session, account)
+    return {"account": account_card(BookContext(session), account)}
+
+
+@router.post("/{account_id}/hard-delete")
+def hard_delete_account(
+    account_id: str, payload: AccountHardDelete, session: Session = Depends(get_session)
+):
+    """Irreversible. Only reachable from Trash, only with the key typed back.
+
+    Children are deleted explicitly rather than left to a cascade: the schema
+    declares plain foreign keys with no ON DELETE, and SQLite does not enforce
+    them by default anyway, so relying on a cascade here would leave orphan rows
+    on SQLite and raise a constraint error on Postgres. Deleting in dependency
+    order does the same thing identically on both.
+    """
+    account = _get(session, account_id)
+    if account.archived_at is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Move the client to Trash before deleting it permanently.",
+        )
+    if payload.confirm_key.strip().upper() != account.key.upper():
+        raise HTTPException(
+            status_code=422,
+            detail=f"Type {account.key} exactly to confirm.",
+        )
+
+    # activity -> task (activity.created_task_id references it), then the rest.
+    for activity in session.exec(
+        select(Activity).where(Activity.account_id == account_id)
+    ).all():
+        session.delete(activity)
+    session.commit()
+
+    for model in (Task, Contact, HealthSnapshot, Risk, UsageMetric):
+        for row in session.exec(
+            select(model).where(model.account_id == account_id)
+        ).all():
+            session.delete(row)
+
+    key, name = account.key, account.name
+    session.delete(account)
+    session.commit()
+    return {"deleted": {"id": account_id, "key": key, "name": name}}
 
 
 @router.get("/{account_id}")
@@ -249,14 +492,14 @@ def patch_account(
     # Dragging between columns must never touch the workstream: they are
     # different axes. Only the column's own clock resets.
     if "column_id" in data and account.column_id != previous_column:
-        account.column_changed_at = datetime.utcnow()
+        account.column_changed_at = utcnow()
         entry = session.exec(
             select(BoardColumn).where(BoardColumn.is_default_entry == True)  # noqa: E712
         ).first()
         if entry and account.column_id == entry.id and not account.handoff_received_at:
-            account.handoff_received_at = datetime.utcnow()
+            account.handoff_received_at = utcnow()
 
-    account.updated_at = datetime.utcnow()
+    account.updated_at = utcnow()
     session.add(account)
 
     session.commit()
@@ -274,8 +517,8 @@ def set_health_override(
     account = _get(session, account_id)
     account.health_manual_override = payload.band
     account.health_override_reason = payload.reason.strip()
-    account.health_override_at = datetime.utcnow()
-    account.updated_at = datetime.utcnow()
+    account.health_override_at = utcnow()
+    account.updated_at = utcnow()
     session.add(account)
     session.commit()
     session.refresh(account)
@@ -288,7 +531,7 @@ def clear_health_override(account_id: str, session: Session = Depends(get_sessio
     account.health_manual_override = None
     account.health_override_reason = None
     account.health_override_at = None
-    account.updated_at = datetime.utcnow()
+    account.updated_at = utcnow()
     session.add(account)
     session.commit()
     session.refresh(account)

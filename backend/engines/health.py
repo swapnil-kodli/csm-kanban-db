@@ -13,7 +13,9 @@ activity, risk or sentiment (and on POST /api/jobs/recompute).
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
+
+from dbtypes import days_between, days_since, utcnow
 from typing import Optional
 
 from sqlmodel import Session, select
@@ -55,16 +57,24 @@ MODE_THRESHOLDS: dict[str, dict[str, float]] = {
 
 SIZE_BANDS = ("small", "mid", "large")
 
+# Below this many active clients, quantiles stop describing anything. With three
+# clients one of them is always "large" and another always "small", purely by
+# position — so the band would be an artefact of the count, not of the deal.
+# Under the floor every account takes the neutral middle band, which is
+# null-is-neutral again: the rule degrades to off rather than to wrong.
+MIN_CLIENTS_FOR_QUANTILES = 8
+DEFAULT_SIZE_BAND = "mid"
+
 
 def size_band_for(quoted_total: int, ladder: list[int]) -> str:
     """Which third of the book's quoted values this account sits in.
 
     Quantiles, not fixed rupee cuts, so the bands stay meaningful as the book
-    grows. A book too small to have quantiles is all `mid`.
+    grows — but only once the book is large enough for thirds to mean anything.
     """
     ordered = sorted(v for v in ladder if v > 0)
-    if len(ordered) < 3 or quoted_total <= 0:
-        return "mid"
+    if len(ordered) < MIN_CLIENTS_FOR_QUANTILES or quoted_total <= 0:
+        return DEFAULT_SIZE_BAND
     lower = ordered[len(ordered) // 3]
     upper = ordered[2 * len(ordered) // 3]
     if quoted_total <= lower:
@@ -149,12 +159,14 @@ def engagement_component(
         return NEUTRAL_ENGAGEMENT
 
     on_day = on_day or date.today()
-    horizon = datetime.combine(on_day, datetime.max.time())
-    days_since = max(0, (horizon - account.last_contact_at).days)
+    # Aware, because last_contact_at comes back aware from Postgres and naive
+    # from a pre-v5 SQLite row; days_between normalises both sides.
+    horizon = datetime.combine(on_day, datetime.max.time(), tzinfo=timezone.utc)
+    elapsed = max(0, days_between(horizon, account.last_contact_at) or 0)
 
     # A pilot is given a shorter grace period than an established customer.
     grace = MODE_THRESHOLDS.get(account.mode, MODE_THRESHOLDS["customer"])["neglect_days"] // 2
-    return int(round(_clamp(RECENCY_CEIL - max(0, days_since - grace) * RECENCY_SLOPE)))
+    return int(round(_clamp(RECENCY_CEIL - max(0, elapsed - grace) * RECENCY_SLOPE)))
 
 
 def support_component(session: Session, account: Account) -> int:
@@ -222,7 +234,7 @@ def recompute_account(session: Session, account: Account, commit: bool = True) -
     parts = compute_components(session, account)
     account.health_score = parts["score"]
     account.health_band = band_for(parts["score"])
-    account.updated_at = datetime.utcnow()
+    account.updated_at = utcnow()
 
     today = date.today()
     snap = session.exec(
@@ -240,7 +252,7 @@ def recompute_account(session: Session, account: Account, commit: bool = True) -
         snap.engagement = parts["engagement"]
         snap.support = parts["support"]
         snap.sentiment = parts["sentiment"]
-        snap.updated_at = datetime.utcnow()
+        snap.updated_at = utcnow()
         session.add(snap)
 
     session.add(account)
@@ -251,7 +263,9 @@ def recompute_account(session: Session, account: Account, commit: bool = True) -
 
 
 def recompute_all(session: Session) -> int:
-    accounts = session.exec(select(Account)).all()
+    accounts = session.exec(
+        select(Account).where(Account.archived_at == None)  # noqa: E711
+    ).all()
     for a in accounts:
         recompute_account(session, a, commit=False)
     session.commit()
@@ -293,4 +307,4 @@ def effective_band(account: Account) -> str:
 def override_age_days(account: Account) -> Optional[int]:
     if not account.health_override_at:
         return None
-    return (datetime.utcnow() - account.health_override_at).days
+    return days_since(account.health_override_at)

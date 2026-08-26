@@ -42,6 +42,7 @@ from fastapi.responses import RedirectResponse
 from sqlmodel import Session, select
 
 from db import get_session
+from dbtypes import as_utc, utcnow
 from models import Account, GoogleCredential
 
 log = logging.getLogger("signal.google")
@@ -123,7 +124,7 @@ def _access_token(session: Session, cred: GoogleCredential) -> str:
     fresh = (
         cred.access_token
         and cred.access_token_expires_at
-        and cred.access_token_expires_at > datetime.utcnow() + timedelta(seconds=60)
+        and as_utc(cred.access_token_expires_at) > utcnow() + timedelta(seconds=60)
     )
     if fresh:
         return cred.access_token  # type: ignore[return-value]
@@ -139,10 +140,10 @@ def _access_token(session: Session, cred: GoogleCredential) -> str:
         },
     )
     cred.access_token = payload["access_token"]
-    cred.access_token_expires_at = datetime.utcnow() + timedelta(
+    cred.access_token_expires_at = utcnow() + timedelta(
         seconds=int(payload.get("expires_in", 3600))
     )
-    cred.updated_at = datetime.utcnow()
+    cred.updated_at = utcnow()
     session.add(cred)
     session.commit()
     return cred.access_token
@@ -246,11 +247,11 @@ def callback(
         cred = GoogleCredential(refresh_token=refresh)
     cred.refresh_token = refresh
     cred.access_token = payload.get("access_token")
-    cred.access_token_expires_at = datetime.utcnow() + timedelta(
+    cred.access_token_expires_at = utcnow() + timedelta(
         seconds=int(payload.get("expires_in", 3600))
     )
     cred.email = email
-    cred.updated_at = datetime.utcnow()
+    cred.updated_at = utcnow()
     session.add(cred)
     session.commit()
     _thread_cache.clear()

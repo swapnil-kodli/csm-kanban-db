@@ -209,7 +209,7 @@ def account_matches(ctx: BookContext, account: Account, f: dict) -> bool:
         return False
     if f.get("columns"):
         column = ctx.column_of(account)
-        # Saved views store the immutable key, so a rename never breaks them.
+        # Filters store the immutable key, so a rename never breaks them.
         if column is None or column.key not in f["columns"]:
             return False
     if f.get("quoted_min") is not None and account.quoted_total < int(f["quoted_min"]):
@@ -240,8 +240,12 @@ def account_matches(ctx: BookContext, account: Account, f: dict) -> bool:
 
         if not account.pinned and score_account(ctx, account)["score"] < ATTENTION_THRESHOLD:
             return False
-    if f.get("high_value") and account.quoted_total < ctx.top_quartile_quote():
-        return False
+    if f.get("high_value"):
+        cut = ctx.top_quartile_quote()
+        # None below the client-count floor: the filter matches nothing rather
+        # than comparing against a quartile that does not describe anything.
+        if cut is None or account.quoted_total < cut:
+            return False
     if f.get("q"):
         needle = str(f["q"]).lower()
         haystack = f"{account.name} {account.key} {account.poc_name or ''}".lower()

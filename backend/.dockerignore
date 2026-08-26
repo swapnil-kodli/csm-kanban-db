@@ -1,4 +1,17 @@
 .venv
-data/*.db
 __pycache__
 **/__pycache__
+
+# Never bake the database into the image. The compose volume supplies it, and a
+# named volume mounting over a NON-empty image directory copies the image's
+# contents into the fresh volume — so a stray dev database here would silently
+# become the starting state of every new deployment.
+data/*.db
+
+# Never bake credentials into the image. `COPY . .` would otherwise ship
+# backend/.env — the DATABASE_URL, the Google client secret — inside a
+# distributable artifact, where `docker history` and any `docker run cat` can
+# read it. The container gets these at RUN time via compose's env_file.
+.env
+.env.*
+!.env.example

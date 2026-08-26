@@ -194,7 +194,7 @@ input, select, textarea { font: inherit; color: inherit; }
 }
 .metric-sub { font-size: 11px; color: var(--text-3); margin-top: 2px; }
 
-/* ---------- quick filters / saved views ---------- */
+/* ---------- quick filters ---------- */
 
 .chip {
   height: 26px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 13px;
@@ -774,3 +774,85 @@ input, select, textarea { font: inherit; color: inherit; }
   border: 1px solid var(--na-border); border-radius: var(--radius-sm);
   padding: 7px 9px; margin: 6px 0; line-height: 1.45;
 }
+
+/* ---------- client CRUD: new-client dialog, trash, destructive actions ----- */
+
+/* Destructive actions get the health-critical channel — the only place a
+   non-health element is allowed to borrow it, because "this cannot be undone"
+   is the one message that outranks the board's restraint. */
+.btn.danger { color: var(--h-critical); border-color: var(--h-critical); background: var(--surface); }
+.btn.danger:hover { background: var(--h-critical); color: #fff; }
+.btn.danger.subtle { border-color: transparent; }
+.btn.danger.subtle:hover { border-color: var(--h-critical); background: var(--surface); color: var(--h-critical); }
+.btn.danger:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn.danger:disabled:hover { background: var(--surface); color: var(--h-critical); }
+
+.btn-count {
+  margin-left: 5px; font-size: 10.5px; font-weight: 700; color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+.btn-icon .btn-count { margin-left: 4px; }
+
+/* The new-client dialog carries four required fields plus an optional block,
+   so it is wider than the single-purpose dialogs and lays fields out in pairs. */
+.dialog-wide { width: 560px; max-height: calc(100vh - 64px); overflow-y: auto; }
+.dialog-wide .field { margin: 0; }
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.field-hint { display: block; margin-top: 5px; font-size: 11px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--text-3); line-height: 1.45; }
+.dialog-body { font-size: 12.5px; color: var(--text-2); line-height: 1.5; }
+
+.dialog-rule { display: flex; align-items: center; gap: 10px; margin: 2px 0; }
+.dialog-rule::before, .dialog-rule::after { content: ""; height: 1px; background: var(--border); flex: 1; }
+.dialog-rule span { font-size: 10.5px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: var(--text-3); }
+
+.danger-title { display: flex; align-items: center; gap: 7px; color: var(--h-critical); }
+
+.empty-aside { font-size: 12px; color: var(--text-3); margin-top: 4px; }
+.empty-aside a { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+
+/* Delete lives at the foot of the drawer, quiet until it is looked for. */
+.drawer-danger {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 14px 0 4px; border-top: 1px solid var(--border);
+}
+
+/* ---------- trash ---------- */
+
+.trash { max-width: 760px; margin: 0 auto; padding: 28px 0 48px; display: flex; flex-direction: column; gap: 18px; }
+.trash-head h2 { font-size: 16px; font-weight: 700; margin: 0 0 4px; }
+.trash-head p { font-size: 12.5px; color: var(--text-2); margin: 0; line-height: 1.5; }
+
+.trash-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.trash-row {
+  display: grid; gap: 5px; padding: 14px 16px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2);
+}
+.trash-id { display: flex; align-items: baseline; gap: 8px; }
+.trash-name { font-size: 13.5px; font-weight: 700; color: var(--text); }
+.trash-key { font-size: 11px; font-weight: 600; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.trash-meta { display: flex; flex-wrap: wrap; gap: 5px; font-size: 11.5px; color: var(--text-2); }
+.trash-owns { font-size: 11.5px; color: var(--text-3); line-height: 1.45; }
+.trash-actions { display: flex; gap: 8px; margin-top: 6px; }
+
+/* ---------- classes the markup used but the stylesheet never defined ------- */
+/* Found by sweeping every className in src/ against this file. All five were
+   already in the markup and silently inheriting defaults — .btn-sm buttons
+   rendered full size, the drawer close button rendered as a browser button,
+   and the swimlane header used one label class in the CSS (.swimlane-label)
+   and a different one in the JSX (.lane-label). */
+
+.btn.btn-sm { height: 26px; padding: 0 9px; font-size: 11.5px; gap: 5px; }
+
+.drawer-close {
+  border: 0; background: transparent; cursor: pointer; line-height: 1;
+  width: 28px; height: 28px; border-radius: var(--radius-sm);
+  font-size: 19px; color: var(--text-3);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.drawer-close:hover { background: var(--accent-soft); color: var(--text); }
+
+.lane-chevron { color: var(--text-3); font-size: 10px; width: 10px; display: inline-block; }
+.lane-label { font-size: 11.5px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; }
+.lane-count { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+
+.skeleton-title { height: 11px; width: 42%; margin-bottom: 9px; }

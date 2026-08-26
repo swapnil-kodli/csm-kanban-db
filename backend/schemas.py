@@ -39,6 +39,54 @@ class CostItem(BaseModel):
     amount: int = Field(ge=0)
 
 
+class AccountCreate(BaseModel):
+    """Everything needed to put a real client on the board, and nothing more.
+
+    Four required fields, because those are the four the card renders. Anything
+    optional here is something the drawer can fill in later; making it required
+    would block someone from recording a client they have not fully scoped yet,
+    which is exactly when they most want it on the board.
+
+    `key` is absent on purpose: it is derived server-side and immutable, so the
+    board's identifiers stay collision-free without anyone having to think about
+    them. `column_id` is absent too — new work lands in the default entry
+    column, which IS the handoff inbox.
+    """
+
+    name: str = Field(min_length=1, max_length=120)
+    mode: Mode
+    client_type: ClientType
+    workstream: Workstream
+
+    city: Optional[str] = Field(default=None, max_length=120)
+    tags: Optional[list[str]] = None
+    comm_modes: Optional[list[CommMode]] = None
+    last_contact_at: Optional[datetime] = None
+    quoted_total: Optional[int] = Field(default=None, ge=0)
+    quoted_at: Optional[date] = None
+    quote_notes: Optional[str] = None
+
+    # The first POC, created alongside the account when a name is given. The
+    # drawer supports several; this is just the one you almost always have at
+    # the moment you create the client.
+    primary_contact_name: Optional[str] = Field(default=None, max_length=120)
+    primary_contact_role: Optional[str] = Field(default=None, max_length=120)
+    primary_contact_email: Optional[str] = None
+    primary_contact_phone: Optional[str] = None
+
+
+class AccountHardDelete(BaseModel):
+    """Typed confirmation for the irreversible path.
+
+    A client owns contacts, tasks, health snapshots, costing and PNL history,
+    and with the demo seed off there is nothing to restore from. The client's
+    key must be typed back exactly, so the destructive action cannot be reached
+    by clicking through.
+    """
+
+    confirm_key: str = Field(min_length=1, max_length=40)
+
+
 class AccountPatch(BaseModel):
     name: Optional[str] = None
     city: Optional[str] = None
@@ -145,7 +193,7 @@ class ColumnCreate(BaseModel):
 
 
 class ColumnPatch(BaseModel):
-    """`key` is absent on purpose — it is immutable, so saved views and filters
+    """`key` is absent on purpose — it is immutable, so filters and shared URLs
     survive a rename."""
 
     label: Optional[str] = Field(default=None, min_length=1, max_length=60)

@@ -1,4 +1,18 @@
-"""Idempotent seed. Runs only when the `account` table is empty.
+"""Demo fixture. Off by default; set SEED_DEMO=true to load it.
+
+Production boots empty — a real deployment starts with no clients and they are
+created through the UI. This fixture is kept, not deleted, because it is the
+only known-good dataset the project has:
+
+  * the engagement recency curve was calibrated against its measured mean of
+    63.4, and scripts/calibrate_engagement.py needs it to re-measure;
+  * the "visually identical to v2" screenshot comparison diffs against it;
+  * the v1 -> v2 -> v3 -> v4 -> v5 migration harness replays onto it.
+
+Delete it and all three become unverifiable, which matters most while the
+Postgres port is in flight and needs something to diff against.
+
+Idempotent: runs only when the `account` table is empty.
 
 Real-estate GTM flavour, continuous with the PropSignal pipeline. Rupee amounts
 are stored as integers; the UI formats them in Indian short scale.
@@ -11,10 +25,13 @@ database rather than a rewrite of the story.
 """
 from __future__ import annotations
 
+import os
+
 from datetime import date, datetime, time, timedelta
 
 from sqlmodel import Session, select
 
+from bootstrap import DEFAULT_COLUMNS
 from models import (
     Account,
     BoardColumn,
@@ -341,42 +358,35 @@ def build_usage_series(targets: list[float], eng: int, sup: int, sent: int, seat
 
 # --- seed --------------------------------------------------------------------
 
+def demo_seed_enabled() -> bool:
+    return os.getenv("SEED_DEMO", "false").strip().lower() in ("1", "true", "yes")
+
+
 def seed_if_empty(session: Session) -> bool:
     if session.exec(select(Account)).first() is not None:
         return False
 
-    csm = User(name="Shivam Singh", initials="SS", avatar_color="#111111")
-    session.add(csm)
-
-    # Config rows first: an account referencing a column_id that does not exist
-    # yet would fail the insert.
+    # The CSM and the board columns are NOT created here any more. They are
+    # rows the app needs whether or not the demo fixture ever runs, so they
+    # belong to bootstrap.ensure_defaults(), which main.py calls before this.
     #
-    # stalled_after_days carries what v2 hardcoded — 3 in the entry column, 14
-    # in the middle of the pipeline, and NULL in Launch, where sitting still is
-    # delivery rather than drift.
-    column_specs = [
-        ("ready_for_onboarding", "Ready for Onboarding", "#9d50dd", True, 3,
-         "Closed Won upstream and not yet picked up."),
-        ("onboarding", "Onboarding", "#2bb4d6", False, 14,
-         "Kickoff through to first configuration."),
-        ("working", "Working", "#6b6b6b", False, 14, "Active delivery."),
-        ("approval", "Approval", "#f5b400", False, 14, "Awaiting client sign-off."),
-        ("launch", "Launch", "#00c875", False, None,
-         "Live. No stall tracking — sitting here is delivery, not drift."),
-    ]
-    columns: dict[str, BoardColumn] = {}
-    for i, (key, label, color, entry, stalled, desc) in enumerate(column_specs):
-        column = BoardColumn(
-            key=key, label=label, color=color, position=float(i + 1),
-            is_default_entry=entry, stalled_after_days=stalled, description=desc,
-        )
-        session.add(column)
-        columns[key] = column
+    # Creating them in both places is not merely redundant: boardcolumn.key and
+    # the single-user assumption mean the second writer hits a unique-constraint
+    # violation, which is exactly what a seeded boot did until this was moved.
+    from bootstrap import ensure_defaults
 
-    session.commit()
-    session.refresh(csm)
-    for column in columns.values():
-        session.refresh(column)
+    ensure_defaults(session)  # idempotent; a no-op on the normal boot path
+
+    csm = session.exec(select(User)).first()
+    if csm is None:  # pragma: no cover - ensure_defaults guarantees one
+        raise RuntimeError("ensure_defaults did not create a CSM user")
+
+    columns: dict[str, BoardColumn] = {
+        c.key: c for c in session.exec(select(BoardColumn)).all()
+    }
+    missing = {k for k, *_ in DEFAULT_COLUMNS} - set(columns)
+    if missing:  # pragma: no cover - same guarantee
+        raise RuntimeError(f"missing seeded columns: {sorted(missing)}")
 
     by_key: dict[str, Account] = {}
 

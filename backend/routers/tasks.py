@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
 from db import get_session
+from dbtypes import utcnow
 from models import Account, Task, User
 from schemas import TaskCreate, TaskPatch
 from serializers import task_card
@@ -36,7 +37,12 @@ def list_tasks(
     if overdue:
         today = date.today()
         tasks = [t for t in tasks if t.status == "open" and t.due_date < today]
-    accounts = {a.id: a for a in session.exec(select(Account)).all()}
+    accounts = {
+        a.id: a
+        for a in session.exec(
+            select(Account).where(Account.archived_at == None)  # noqa: E711
+        ).all()
+    }
     cards = [task_card(t, accounts[t.account_id]) for t in tasks if t.account_id in accounts]
     cards.sort(key=lambda c: (c["due_date"], c["sort_index"]))
     return {"tasks": cards, "count": len(cards)}
@@ -64,7 +70,7 @@ def create_task(payload: TaskCreate, session: Session = Depends(get_session)):
         priority=payload.priority,
         owner_id=owner.id,
         provenance=payload.provenance,
-        sort_index=float(datetime.utcnow().timestamp()),
+        sort_index=float(utcnow().timestamp()),
     )
     session.add(task)
     session.commit()
@@ -92,8 +98,8 @@ def patch_task(task_id: str, payload: TaskPatch, session: Session = Depends(get_
         task.status = "open"
         task.completed_at = None
 
-    task.completed_at = datetime.utcnow() if task.status == "done" else None
-    task.updated_at = datetime.utcnow()
+    task.completed_at = utcnow() if task.status == "done" else None
+    task.updated_at = utcnow()
     session.add(task)
     session.commit()
     session.refresh(task)

@@ -3,3 +3,10 @@ uvicorn[standard]==0.34.0
 sqlmodel==0.0.22
 pydantic==2.10.4
 python-dateutil==2.9.0.post0
+
+# Postgres driver. Installed unconditionally, not used unconditionally: db.py
+# picks the dialect from DATABASE_URL, so a SQLite deployment never opens it.
+# Pinned here rather than left to the operator because a missing driver fails
+# at import time on the first Postgres boot, which is the worst moment to
+# discover it.
+psycopg[binary]==3.2.3

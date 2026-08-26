@@ -80,6 +80,12 @@ def get_board(
         "columns": columns,
         "swimlanes": _swimlanes(group_by, cards),
         "total_cards": len(cards),
+        # `total_cards` is post-filter, so on its own it cannot tell the client
+        # whether zero means "no clients yet" or "these filters match nothing".
+        # Those are opposite situations wanting opposite calls to action, so the
+        # unfiltered book size travels with the board.
+        "book_size": len(ctx.accounts),
+        "archived_count": ctx.archived_count,
     }
 
 

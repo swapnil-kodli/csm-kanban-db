@@ -7,7 +7,7 @@ import type { ColumnConfig, ColumnImpact } from "../lib/types";
  * A narrow configuration surface on purpose.
  *
  * Every destructive action states its blast radius *before* it happens, not
- * after — "this will move 4 cards and update 2 saved views" is the information
+ * after — "this will move 4 cards" is the information
  * someone needs to decide, and showing it afterwards is a receipt, not a
  * choice. Recolouring is restricted to the token palette rather than a free
  * picker, so the board keeps one saturated channel for health.
@@ -109,7 +109,7 @@ export function Settings({ onChanged }: { onChanged: () => void }) {
                 run(() => apiPatch(`/columns/${c.id}`, { label: e.target.value.trim() }))
               }
             />
-            {/* The key never changes, so saved views survive a rename. */}
+            {/* The key never changes, so filters and URLs survive a rename. */}
             <code className="col-key">{c.key}</code>
 
             <div className="col-palette">

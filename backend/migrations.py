@@ -33,7 +33,7 @@ from sqlmodel import Session
 
 log = logging.getLogger("signal.migrations")
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # v1 lifecycle_stage -> v2 column. The v2 pipeline has no terminal-negative
 # state, so `closed` accounts land in `launch` and are logged by name for the
@@ -167,7 +167,22 @@ def _set_version(session: Session, version: int) -> None:
 
 
 def migrate(session: Session) -> dict:
-    """Run any pending migration. Safe to call on every boot."""
+    """Run any pending migration. Safe to call on every boot.
+
+    SQLite only. Every step here is written in SQLite's dialect — PRAGMA,
+    ALTER TABLE ... DROP COLUMN, its index rules — and a Postgres deployment is
+    bootstrapped directly at the current schema version instead of replaying a
+    chain it never lived through. The guard is a hard return, not a warning:
+    running these against Postgres would fail halfway and leave it part-built.
+    """
+    dialect = session.get_bind().dialect.name
+    if dialect != "sqlite":
+        return {
+            "migrated": False,
+            "reason": f"migration chain is SQLite-only; {dialect} bootstraps at "
+                      f"schema version {SCHEMA_VERSION}",
+        }
+
     result = _migrate_v1_to_v2(session)
     v3 = _migrate_v2_to_v3(session)
     if v3.get("migrated"):
@@ -175,6 +190,9 @@ def migrate(session: Session) -> dict:
     v4 = _migrate_v3_to_v4(session)
     if v4.get("migrated"):
         result = {**result, "v4": v4}
+    v5 = _migrate_v4_to_v5(session)
+    if v5.get("migrated"):
+        result = {**result, "v5": v5}
     dropped = _drop_saved_views(session)
     if dropped is not None:
         result = {**result, "saved_views_dropped": dropped}
@@ -195,6 +213,101 @@ def _drop_saved_views(session: Session) -> Optional[int]:
     session.commit()
     log.warning("Dropped the savedview table (%d row(s)) — feature removed", count)
     return count
+
+
+def _migrate_v4_to_v5(session: Session) -> dict:
+    """Soft delete on account, and `user` -> `app_user`.
+
+    `user` is a reserved word in Postgres. SQLAlchemy quotes it so it works
+    either way, but a reserved word that survives only because the ORM is
+    careful is a trap for whoever writes raw SQL next.
+    """
+    tables = _table_names(session)
+    if "account" not in tables:
+        return {"migrated": False, "reason": "tables not created yet"}
+
+    _ensure_meta(session)
+    account_cols = _columns(session, "account")
+    needs_archive = "archived_at" not in account_cols
+
+    # BOTH TABLES CAN EXIST HERE, and the obvious guard ("user" present and
+    # "app_user" absent) is wrong because of it. main.bootstrap() calls
+    # init_db() before migrate(), so SQLModel's create_all has already made an
+    # EMPTY app_user by the time this runs. Skipping the rename on that basis
+    # strands every existing row in the old table: /me answers from the new
+    # empty one, ensure_defaults adds a second CSM, and every migrated
+    # account.owner_id points at a user the app can no longer see — the drawer
+    # shows no owner at all. Measured on a real v4 database, not theorised.
+    rename = _rename_user_table(session, tables)
+    if not needs_archive and rename == "not needed":
+        return {"migrated": False, "reason": "already on the v5 schema"}
+
+    log.warning("Migrating soft-delete and app_user rename, v4 -> v5")
+    if needs_archive:
+        session.exec(text("ALTER TABLE account ADD COLUMN archived_at DATETIME"))
+
+    _set_version(session, 5)
+    session.commit()
+    log.warning("v5 complete: archived_at=%s, user table: %s", needs_archive, rename)
+    return {"migrated": True, "archived_at_added": needs_archive, "user_table": rename}
+
+
+def _rename_user_table(session: Session, tables: set) -> str:
+    """`user` -> `app_user`, whatever state create_all has left behind.
+
+    `user` is a reserved word in Postgres. SQLAlchemy quotes it so it works
+    either way, but a reserved word that survives only because the ORM is
+    careful is a trap for whoever writes raw SQL next.
+
+    Three cases, and only the first is the textbook one:
+
+      user only            plain RENAME. SQLite rewrites the foreign keys in
+                           dependent tables for us, since legacy_alter_table is
+                           off by default from 3.25 on.
+      user + empty app_user   drop the empty decoy, then RENAME — so the FK
+                           rewrite still happens properly.
+      user + populated app_user   a database already booted on the broken
+                           build. Copy across only the ids app_user lacks and
+                           drop `user`; the ids are preserved verbatim, so
+                           account.owner_id resolves again.
+
+    Known limitation of that third branch: it recovers the DATA but not the
+    schema text. `account`'s foreign key still names `user` in its stored DDL,
+    because changing it in SQLite means a full 12-step table rebuild. Harmless
+    as shipped — foreign keys are not enforced unless PRAGMA foreign_keys is
+    turned on, and nothing here turns it on — but it is a trap for whoever does.
+    Left as-is deliberately: that branch can only be reached by a database
+    booted on an unreleased intermediate build, so a table rebuild would be
+    real risk taken on behalf of a state no deployment can be in. The first two
+    branches, which are the ones real databases take, rewrite the FK correctly
+    via RENAME.
+    """
+    if "user" not in tables:
+        return "not needed"
+
+    if "app_user" not in tables:
+        session.exec(text('ALTER TABLE "user" RENAME TO app_user'))
+        session.commit()
+        return "renamed"
+
+    existing = session.exec(text("SELECT count(*) FROM app_user")).first()[0]
+    if existing == 0:
+        session.exec(text("DROP TABLE app_user"))
+        session.exec(text('ALTER TABLE "user" RENAME TO app_user'))
+        session.commit()
+        return "renamed over an empty app_user"
+
+    moved = session.exec(
+        text(
+            "INSERT INTO app_user (id, created_at, updated_at, name, initials, avatar_color) "
+            'SELECT id, created_at, updated_at, name, initials, avatar_color FROM "user" '
+            "WHERE id NOT IN (SELECT id FROM app_user)"
+        )
+    ).rowcount
+    session.exec(text('DROP TABLE "user"'))
+    session.commit()
+    log.warning("Recovered %d user row(s) stranded in the old `user` table", moved)
+    return f"merged {moved} stranded row(s)"
 
 
 def _migrate_v3_to_v4(session: Session) -> dict:
@@ -281,7 +394,7 @@ def _migrate_v3_to_v4(session: Session) -> dict:
         if col in account_cols:
             session.exec(text(f"ALTER TABLE account DROP COLUMN {col}"))
 
-    _set_version(session, SCHEMA_VERSION)
+    _set_version(session, 4)
     session.commit()
     log.warning(
         "POC migration complete: %d folded into new rows, %d existing contacts promoted",

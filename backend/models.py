@@ -9,8 +9,9 @@ import uuid
 from datetime import date, datetime
 from typing import Any, Optional
 
-from sqlalchemy import Column, JSON
 from sqlmodel import Field, SQLModel
+
+from dbtypes import JSONColumn, TZDateTime, utcnow
 
 
 def _uuid() -> str:
@@ -18,13 +19,17 @@ def _uuid() -> str:
 
 
 def _now() -> datetime:
-    return datetime.utcnow()
+    # Timezone-aware everywhere; see dbtypes.utcnow().
+    return utcnow()
 
 
+# NOTE: these use sa_type, never sa_column. A Column() object may belong to
+# only one Table, so a shared instance on this base class is claimed by the
+# first table that inherits it and raises ArgumentError on the second.
 class Stamped(SQLModel):
     id: str = Field(default_factory=_uuid, primary_key=True)
-    created_at: datetime = Field(default_factory=_now)
-    updated_at: datetime = Field(default_factory=_now)
+    created_at: datetime = Field(default_factory=_now, sa_type=TZDateTime)
+    updated_at: datetime = Field(default_factory=_now, sa_type=TZDateTime)
 
 
 # --- enums as literal string sets (validated in schemas, stored as str) -------
@@ -76,6 +81,10 @@ RISK_SEVERITIES = ("high", "medium", "low")
 
 
 class User(Stamped, table=True):
+    # `user` is a reserved word in Postgres. SQLAlchemy quotes it so it works,
+    # but anyone writing raw SQL later would trip over it.
+    __tablename__ = "app_user"
+
     name: str
     initials: str
     avatar_color: str = "#111111"
@@ -88,21 +97,22 @@ class Account(Stamped, table=True):
     # --- the two axes ------------------------------------------------------
     column_id: str = Field(foreign_key="boardcolumn.id")
     workstream: str = Field(default="bot_making", index=True)
-    column_changed_at: Optional[datetime] = None        # drives `column_stalled`
+    # drives `column_stalled`
+    column_changed_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
 
     # --- commercial shape --------------------------------------------------
     mode: str = Field(default="pilot", index=True)      # pilot | customer
     client_type: str = Field(default="voice_ai_only")   # voice_ai_only | data_plus_voice_ai
 
     city: Optional[str] = None
-    owner_id: str = Field(foreign_key="user.id", index=True)
+    owner_id: str = Field(foreign_key="app_user.id", index=True)
 
     # --- health engine outputs (cached) ------------------------------------
     health_score: int = 70
     health_band: str = "watch"
     health_manual_override: Optional[str] = None
     health_override_reason: Optional[str] = None
-    health_override_at: Optional[datetime] = None
+    health_override_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
     health_note: Optional[str] = None                   # free text, set during a check
 
     # --- health engine inputs ----------------------------------------------
@@ -111,11 +121,11 @@ class Account(Stamped, table=True):
 
     # POCs live in `contact`, one of which carries is_primary. The three flat
     # poc_* fields were folded into that table in the v4 migration.
-    comm_modes: list = Field(default_factory=list, sa_column=Column(JSON))
+    comm_modes: list = Field(default_factory=list, sa_type=JSONColumn)
 
     # --- costing: what was quoted -----------------------------------------
     quoted_total: int = 0
-    quoted_line_items: list = Field(default_factory=list, sa_column=Column(JSON))
+    quoted_line_items: list = Field(default_factory=list, sa_type=JSONColumn)
     quoted_at: Optional[date] = None
     quote_notes: Optional[str] = None
 
@@ -123,13 +133,19 @@ class Account(Stamped, table=True):
     # total_cost / gross_margin / margin_pct are computed server-side on read,
     # never stored, so they cannot drift from cost_items.
     revenue_recognised: int = 0
-    cost_items: list = Field(default_factory=list, sa_column=Column(JSON))
+    cost_items: list = Field(default_factory=list, sa_type=JSONColumn)
 
-    tags: list = Field(default_factory=list, sa_column=Column(JSON))
-    handoff_received_at: Optional[datetime] = None
-    last_contact_at: Optional[datetime] = None
+    tags: list = Field(default_factory=list, sa_type=JSONColumn)
+    handoff_received_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
+    last_contact_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
     attention_score: float = 0.0
     pinned: bool = False
+
+    # Soft delete. A client owns contacts, tasks, snapshots, costing and PNL
+    # history, and with no seed to restore from a hard delete is unrecoverable.
+    # Set here, the row leaves every board, engine and metric but stays intact
+    # in Trash until someone hard-deletes it on purpose.
+    archived_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
 
 
 class Contact(Stamped, table=True):
@@ -154,10 +170,10 @@ class Task(Stamped, table=True):
     due_date: date
     status: str = Field(default="open", index=True)
     priority: str = "normal"
-    owner_id: str = Field(foreign_key="user.id", index=True)
+    owner_id: str = Field(foreign_key="app_user.id", index=True)
     provenance: Optional[str] = None
     rule_key: Optional[str] = Field(default=None, index=True)  # alert-engine idempotency
-    completed_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
     sort_index: float = 0.0
 
 
@@ -165,7 +181,7 @@ class Activity(Stamped, table=True):
     account_id: str = Field(foreign_key="account.id", index=True)
     contact_id: Optional[str] = Field(default=None, foreign_key="contact.id")
     type: str
-    occurred_at: datetime = Field(index=True)
+    occurred_at: datetime = Field(sa_type=TZDateTime, index=True)
     summary: str
     body: Optional[str] = None
     created_task_id: Optional[str] = Field(default=None, foreign_key="task.id")
@@ -187,7 +203,7 @@ class Risk(Stamped, table=True):
     severity: str = "medium"
     status: str = Field(default="open", index=True)
     note: Optional[str] = None
-    opened_at: datetime = Field(default_factory=_now)
+    opened_at: datetime = Field(default_factory=_now, sa_type=TZDateTime)
 
 
 class UsageMetric(Stamped, table=True):
@@ -201,7 +217,7 @@ class UsageMetric(Stamped, table=True):
 class BoardColumn(Stamped, table=True):
     """A user-defined board column.
 
-    `key` is a slug, immutable after create, so saved views and filters that
+    `key` is a slug, immutable after create, so filters and shared URLs that
     reference it keep working across a rename.
 
     Two flags carry behaviour that v2 hardcoded to the literal
@@ -231,5 +247,5 @@ class GoogleCredential(Stamped, table=True):
     email: Optional[str] = None
     refresh_token: str
     access_token: Optional[str] = None
-    access_token_expires_at: Optional[datetime] = None
+    access_token_expires_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
     scope: str = "https://www.googleapis.com/auth/gmail.readonly"

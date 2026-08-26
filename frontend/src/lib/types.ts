@@ -114,7 +114,48 @@ export interface BoardResponse {
   group_by: GroupBy;
   columns: BoardColumn[];
   swimlanes: Swimlane[];
+  /** Post-filter. Zero here does not mean the book is empty — see book_size. */
   total_cards: number;
+  /** Unfiltered live clients. Separates "no clients yet" from "no matches". */
+  book_size: number;
+  archived_count: number;
+}
+
+/** The four required fields, then everything the drawer could also fill in. */
+export interface NewClientInput {
+  name: string;
+  mode: Mode;
+  client_type: ClientType;
+  workstream: Workstream;
+  city?: string;
+  comm_modes?: CommMode[];
+  quoted_total?: number;
+  primary_contact_name?: string;
+  primary_contact_role?: string;
+  primary_contact_email?: string;
+  primary_contact_phone?: string;
+}
+
+/**
+ * A soft-deleted client, as Trash shows it. Deliberately not an AccountCard:
+ * an archived client has no attention score, no size band and no stall state,
+ * because those describe a live book. What matters here is identity plus the
+ * weight of what a hard delete would destroy.
+ */
+export interface TrashRow {
+  id: string;
+  key: string;
+  name: string;
+  mode: Mode;
+  mode_label: string;
+  workstream: Workstream;
+  workstream_label: string;
+  client_type_label: string;
+  column_label: string;
+  archived_at: string | null;
+  quoted_total: number;
+  owns: { contacts: number; tasks: number; snapshots: number; risks: number };
+  restorable: boolean;
 }
 
 export interface Metric {

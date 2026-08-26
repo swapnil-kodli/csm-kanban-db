@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import type {
   AccountCard, AccountDetail, BoardResponse, Filters, GroupBy,
-  HealthBand, Metric, TaskBucket, TaskPriority, TaskType,
+  HealthBand, Metric, NewClientInput, TaskBucket, TaskPriority, TaskType, TrashRow,
 } from "./lib/types";
 import { apiDelete, apiGet, apiPatch, apiPost, getSource, onSourceChange, qs } from "./lib/api";
 import type { SourceState } from "./lib/api";
@@ -12,6 +12,8 @@ import { Drawer } from "./components/Drawer";
 import { NewTaskDialog } from "./components/NewTaskDialog";
 import { CommandPalette, OverrideDialog } from "./components/Palette";
 import { Settings } from "./components/Settings";
+import { NewClientDialog } from "./components/NewClientDialog";
+import { Trash } from "./components/Trash";
 
 const GROUP_KEY = "signal-cs:group-by";
 
@@ -36,6 +38,13 @@ function filtersFromSearch(search: string): Filters {
   }
 }
 
+/** Where a new client lands, named rather than assumed — columns are configurable. */
+function entryColumnLabel(board: BoardResponse): string {
+  return board.columns.find((c) => c.is_default_entry)?.title
+    ?? board.columns[0]?.title
+    ?? "the first column";
+}
+
 interface Toast { id: number; message: string; error?: boolean }
 
 export default function App() {
@@ -46,7 +55,9 @@ export default function App() {
     readStored(GROUP_KEY, "none", ["none", "priority", "mode", "client_type", "workstream"] as const)
   );
   const [collapsedLanes, setCollapsedLanes] = useState<Set<string>>(new Set());
-  const onSettings = location.pathname.replace(/\/+$/, "").endsWith("/settings");
+  const path = location.pathname.replace(/\/+$/, "");
+  const onSettings = path.endsWith("/settings");
+  const onTrash = path.endsWith("/trash");
 
 
   /**
@@ -91,6 +102,9 @@ export default function App() {
   const [newTaskFor, setNewTaskFor] = useState<string | null>(null);
   const [overrideFor, setOverrideFor] = useState<{ accountId: string; band: HealthBand | null } | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [newClientOpen, setNewClientOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [trash, setTrash] = useState<TrashRow[]>([]);
 
   const searchRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLInputElement>(null);
@@ -127,23 +141,30 @@ export default function App() {
     setMetrics(data.metrics);
   }, []);
 
+  /** Trash is loaded alongside the board so the topbar count is never stale. */
+  const loadTrash = useCallback(async () => {
+    const data = await apiGet<{ accounts: TrashRow[] }>("/accounts/trash/list");
+    setTrash(data.accounts);
+  }, []);
+
   const refresh = useCallback(async () => {
     try {
-      await Promise.all([loadBoard(), loadMetrics()]);
+      await Promise.all([loadBoard(), loadMetrics(), loadTrash()]);
       setFatal(null);
     } catch (err) {
       setFatal(err instanceof Error ? err.message : "Could not reach the backend");
     }
-  }, [loadBoard, loadMetrics]);
+  }, [loadBoard, loadMetrics, loadTrash]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
       try {
-        const [, , me] = await Promise.all([
+        const [, , , me] = await Promise.all([
           loadBoard(),
           loadMetrics(),
+          loadTrash(),
           apiGet<{ user: typeof user }>("/me"),
         ]);
         if (cancelled) return;
@@ -156,7 +177,7 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [loadBoard, loadMetrics]);
+  }, [loadBoard, loadMetrics, loadTrash]);
 
   // --- drawer ---------------------------------------------------------------
   const loadDetail = useCallback(async (accountId: string) => {
@@ -209,6 +230,55 @@ export default function App() {
       await Promise.all([loadBoard(), loadDetail(accountId), loadMetrics()]);
     } catch {
       toast("Could not save that change", true);
+    }
+  }
+
+  async function createClient(input: NewClientInput) {
+    setCreating(true);
+    try {
+      const res = await apiPost<{ account: AccountCard }>("/accounts", input);
+      setNewClientOpen(false);
+      toast(`${res.account.name} added as ${res.account.key}`);
+      await refresh();
+      // Open it straight away: the four fields on the card are the minimum, and
+      // the drawer is where the rest of the client actually gets filled in.
+      setOpenAccountId(res.account.account_id);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not create that client", true);
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  /** Soft delete. Nothing is destroyed; the client moves to Trash. */
+  async function archiveClient(accountId: string, name: string) {
+    try {
+      await apiDelete(`/accounts/${accountId}`);
+      setOpenAccountId(null);
+      toast(`${name} moved to Trash`);
+      await refresh();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not delete that client", true);
+    }
+  }
+
+  async function restoreClient(row: TrashRow) {
+    try {
+      await apiPost(`/accounts/${row.id}/restore`);
+      toast(`${row.name} restored`);
+      await refresh();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not restore that client", true);
+    }
+  }
+
+  async function hardDeleteClient(row: TrashRow, confirmKey: string) {
+    try {
+      await apiPost(`/accounts/${row.id}/hard-delete`, { confirm_key: confirmKey });
+      toast(`${row.name} deleted permanently`);
+      await refresh();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not delete that client", true);
     }
   }
 
@@ -384,6 +454,8 @@ export default function App() {
         onFilters={(f) => { setActiveMetric(null); setFilters(f); }}
         onOpenPalette={() => { setPaletteOpen(true); searchRef.current?.blur(); }}
         onNewTask={() => setNewTaskFor(openAccountId ?? "")}
+        onNewClient={() => setNewClientOpen(true)}
+        trashCount={trash.length}
       />
 
       {degraded && <DegradedBanner onRetry={() => refresh()} />}
@@ -391,6 +463,13 @@ export default function App() {
       {onSettings ? (
         <Settings
           onChanged={refresh}
+        />
+      ) : onTrash ? (
+        <Trash
+          rows={trash}
+          onRestore={restoreClient}
+          onHardDelete={hardDeleteClient}
+          onBack={() => navigate("..")}
         />
       ) : (
         <>
@@ -413,11 +492,42 @@ export default function App() {
         </div>
       )}
 
-      {board && board.total_cards === 0 && (
+      {/* Two different zeroes, two different calls to action. `total_cards` is
+          post-filter, so it cannot tell these apart on its own — `book_size` is
+          the unfiltered live book. */}
+      {board && board.total_cards === 0 && board.book_size === 0 && (
+        <div className="board-wrap">
+          <div className="empty-state">
+            <h2>No clients yet</h2>
+            <p>
+              The board is ready — five columns, health scoring and the attention
+              queue all work as soon as there is something to track. Add the first
+              client and it lands in {entryColumnLabel(board)}.
+            </p>
+            <button type="button" className="btn primary" onClick={() => setNewClientOpen(true)}>
+              Add the first client
+            </button>
+            {board.archived_count > 0 && (
+              <p className="empty-aside">
+                <Link to="trash">
+                  {board.archived_count} deleted{" "}
+                  {board.archived_count === 1 ? "client is" : "clients are"} in Trash
+                </Link>
+                {" "}and can be restored.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {board && board.total_cards === 0 && board.book_size > 0 && (
         <div className="board-wrap">
           <div className="empty-state">
             <h2>Nothing matches these filters</h2>
-            <p>Clear a filter chip or pick a different saved view to bring the book back.</p>
+            <p>
+              {board.book_size} {board.book_size === 1 ? "client is" : "clients are"} on the
+              board — none of them match what is selected right now.
+            </p>
             <button type="button" className="btn" onClick={() => { setFilters({}); setActiveMetric(null); }}>
               Clear filters
             </button>
@@ -451,6 +561,7 @@ export default function App() {
           onAddContact={() => addContact(openAccountId)}
           onPatchContact={(id, patch) => patchContact(openAccountId, id, patch)}
           onDeleteContact={(id) => deleteContact(openAccountId, id)}
+          onDeleteAccount={() => archiveClient(openAccountId, detail.account.name)}
         />
       )}
 
@@ -475,6 +586,14 @@ export default function App() {
             setNewTaskFor(null);
           }}
           onClose={() => setNewTaskFor(null)}
+        />
+      )}
+
+      {newClientOpen && (
+        <NewClientDialog
+          busy={creating}
+          onSubmit={createClient}
+          onClose={() => setNewClientOpen(false)}
         />
       )}
 

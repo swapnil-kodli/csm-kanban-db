@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from db import get_session
+from dbtypes import utcnow
 from models import Account, Contact
 from schemas import ContactCreate, ContactPatch
 from engines import alerts as alert_engine
@@ -129,7 +130,7 @@ def patch_contact(
         setattr(contact, field, value)
     if data.get("is_primary"):
         _clear_other_primaries(session, contact.account_id, keep=contact.id)
-    contact.updated_at = datetime.utcnow()
+    contact.updated_at = utcnow()
     session.add(contact)
     session.commit()
     session.refresh(contact)

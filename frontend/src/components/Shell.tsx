@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Search, SlidersHorizontal, Plus, AlertTriangle, X, Settings as Gear } from "lucide-react";
+import { Search, SlidersHorizontal, Plus, AlertTriangle, X, Settings as Gear, Trash2, Building2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import type { Filters, GroupBy, Metric } from "../lib/types";
 import { formatINR } from "../lib/format";
@@ -25,10 +25,13 @@ interface TopBarProps {
   onFilters: (f: Filters) => void;
   onOpenPalette: () => void;
   onNewTask: () => void;
+  onNewClient: () => void;
+  trashCount: number;
 }
 
 export function TopBar({
   user, source, groupBy, filters, searchRef, onGroupBy, onFilters, onOpenPalette, onNewTask,
+  onNewClient, trashCount,
 }: TopBarProps) {
   const [panelOpen, setPanelOpen] = useState(false);
   const activeCount = countFilters(filters);
@@ -72,6 +75,20 @@ export function TopBar({
           ))}
         </select>
 
+        {/* Trash is only offered once something is in it: an always-visible
+            empty bin is a permanent reminder of nothing. */}
+        {trashCount > 0 && (
+          <Link
+            className="btn btn-icon"
+            to="trash"
+            title={`Trash · ${trashCount} deleted`}
+            aria-label={`Trash, ${trashCount} deleted clients`}
+          >
+            <Trash2 size={14} strokeWidth={2.2} />
+            <span className="btn-count">{trashCount}</span>
+          </Link>
+        )}
+
         <Link className="btn btn-icon" to="settings" title="Settings" aria-label="Settings">
           <Gear size={14} strokeWidth={2.2} />
         </Link>
@@ -86,9 +103,14 @@ export function TopBar({
           )}
         </div>
 
-        <button type="button" className="btn primary" onClick={onNewTask} title="New task (c)">
+        <button type="button" className="btn" onClick={onNewTask} title="New task (c)">
           <Plus size={14} strokeWidth={2.4} />
           Task
+        </button>
+
+        <button type="button" className="btn primary" onClick={onNewClient} title="New client">
+          <Building2 size={14} strokeWidth={2.4} />
+          Client
         </button>
 
         {user && (

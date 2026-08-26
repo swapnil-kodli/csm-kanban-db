@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
 from db import get_session
+from dbtypes import utcnow
 from models import Account, BoardColumn, COLUMN_PALETTE
 from schemas import ColumnCreate, ColumnDelete, ColumnPatch, ColumnReorder
 
@@ -51,7 +52,11 @@ def _slugify(label: str, taken: set[str]) -> str:
 
 def _counts(session: Session) -> dict[str, int]:
     out: dict[str, int] = {}
-    for a in session.exec(select(Account)).all():
+    # Archived clients do not count against a column, so they never block a
+    # delete or an archive.
+    for a in session.exec(
+        select(Account).where(Account.archived_at == None)  # noqa: E711
+    ).all():
         out[a.column_id] = out.get(a.column_id, 0) + 1
     return out
 
@@ -224,7 +229,7 @@ def patch_column(
 
     for field, value in data.items():
         setattr(column, field, value)
-    column.updated_at = datetime.utcnow()
+    column.updated_at = utcnow()
     session.add(column)
     session.commit()
     session.refresh(column)
@@ -239,7 +244,7 @@ def reorder_columns(payload: ColumnReorder, session: Session = Depends(get_sessi
         if column is None:
             raise HTTPException(status_code=404, detail=f"Unknown column {cid}")
         column.position = float(index + 1)
-        column.updated_at = datetime.utcnow()
+        column.updated_at = utcnow()
         session.add(column)
     session.commit()
     counts = _counts(session)
@@ -284,11 +289,14 @@ def delete_column(
         if target is None or target.id == column.id:
             raise HTTPException(status_code=422, detail="Pick a different target column")
         for account in session.exec(
-            select(Account).where(Account.column_id == column.id)
+            select(Account).where(
+                Account.column_id == column.id,
+                Account.archived_at == None,  # noqa: E711
+            )
         ).all():
             account.column_id = target.id
-            account.column_changed_at = datetime.utcnow()
-            account.updated_at = datetime.utcnow()
+            account.column_changed_at = utcnow()
+            account.updated_at = utcnow()
             session.add(account)
 
     session.delete(column)

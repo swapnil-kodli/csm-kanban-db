@@ -20,7 +20,9 @@ def search(q: str = Query("", max_length=120), session: Session = Depends(get_se
     if len(needle) < 1:
         return {"accounts": [], "contacts": [], "tasks": [], "activities": [], "query": q}
 
-    accounts = session.exec(select(Account)).all()
+    accounts = session.exec(
+        select(Account).where(Account.archived_at == None)  # noqa: E711
+    ).all()
     by_id = {a.id: a for a in accounts}
 
     account_hits = [

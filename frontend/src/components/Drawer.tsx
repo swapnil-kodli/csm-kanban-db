@@ -69,6 +69,7 @@ export function Drawer({
   onAddContact,
   onPatchContact,
   onDeleteContact,
+  onDeleteAccount,
 }: {
   detail: AccountDetail;
   onClose: () => void;
@@ -80,12 +81,14 @@ export function Drawer({
   onAddContact: () => void;
   onPatchContact: (id: string, patch: Record<string, unknown>) => void;
   onDeleteContact: (id: string) => void;
+  onDeleteAccount: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [overrideOpen, setOverrideOpen] = useState(false);
   const [overrideBand, setOverrideBand] = useState("at_risk");
   const [overrideReason, setOverrideReason] = useState("");
   const [note, setNote] = useState(detail.health.note ?? "");
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const { account, health, commercials, attention } = detail;
   const vel = velocityGlyph(health.velocity);
@@ -566,8 +569,50 @@ export function Drawer({
             {detail.tasks.length === 0 && <p className="panel-muted">No tasks</p>}
           </Panel>
 
+          {/* Last, and visually quiet. Delete is soft: this moves the client to
+              Trash, where it keeps its contacts, tasks and health history until
+              someone deletes it permanently on purpose. */}
+          <div className="drawer-danger">
+            <button
+              type="button"
+              className="btn btn-sm danger subtle"
+              onClick={() => setConfirmDelete(true)}
+            >
+              Delete client
+            </button>
+            <span className="panel-muted">Moves to Trash. Nothing is destroyed.</span>
+          </div>
+
         </div>
       </aside>
+
+      {confirmDelete && (
+        <div className="dialog-scrim" onClick={() => setConfirmDelete(false)}>
+          <div
+            className="dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Delete ${account.name}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3>Delete {account.name}?</h3>
+            <p className="dialog-body">
+              It moves to Trash and leaves the board and every metric. Its contacts,
+              tasks and health history stay intact, and you can restore it from
+              there at any time.
+            </p>
+            <div className="dialog-actions">
+              <button className="btn subtle" onClick={() => setConfirmDelete(false)}>Cancel</button>
+              <button
+                className="btn danger"
+                onClick={() => { setConfirmDelete(false); onDeleteAccount(); }}
+              >
+                Move to Trash
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

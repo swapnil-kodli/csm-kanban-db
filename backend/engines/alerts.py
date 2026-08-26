@@ -25,6 +25,8 @@ rule would double-fire on the same account.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+
+from dbtypes import days_since, utcnow
 from typing import Optional
 
 from sqlmodel import Session, select
@@ -75,7 +77,7 @@ def _emit(
         owner_id=owner_id,
         provenance=provenance,
         rule_key=rule_key,
-        sort_index=float(datetime.utcnow().timestamp()),
+        sort_index=float(utcnow().timestamp()),
     )
     session.add(task)
     return task
@@ -113,11 +115,7 @@ def usage_decline_ratio(session: Session, account_id: str) -> Optional[float]:
 
 def state_flags(ctx: BookContext, account: Account) -> dict:
     """Info-tier signals. These change board state; they never create a task."""
-    days_since_contact = (
-        (datetime.utcnow() - account.last_contact_at).days
-        if account.last_contact_at
-        else None
-    )
+    days_since_contact = days_since(account.last_contact_at)
     size_band = ctx.size_band_by_account.get(account.id, "mid")
     th = health_engine.thresholds(size_band, account.mode)
     days_in_column = ctx.days_in_column(account)
@@ -187,7 +185,13 @@ def evaluate(session: Session) -> dict:
                 due_in_days=0,
             )
 
-        if band in ("at_risk", "critical") and account.quoted_total >= top_quartile:
+        # top_quartile is None below the client-count floor: the rule is skipped
+        # entirely rather than firing on whoever is merely biggest.
+        if (
+            top_quartile is not None
+            and band in ("at_risk", "critical")
+            and account.quoted_total >= top_quartile
+        ):
             emit(
                 rule_key="high_value_at_risk",
                 title=f"Run risk playbook — {account.name}",
