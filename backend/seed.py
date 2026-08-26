@@ -18,7 +18,6 @@ from sqlmodel import Session, select
 from models import (
     Account,
     BoardColumn,
-    Activity,
     Contact,
     HealthSnapshot,
     Risk,
@@ -243,85 +242,18 @@ RISKS = [
     ("FBP-12", "other", "high", "Budget pulled for the category", 40),
 ]
 
-# account key -> [(days_ago, type, summary, body)]
-ACTIVITIES = {
-    "SBP-01": [
-        (3, "email", "Sent kickoff scheduling options for next week", None),
-        (5, "meeting", "Sales-to-CS handoff review with Akash", "Sold on QLs volume plus Raw Data profiles for the Tricity micro-markets. Wants first leads inside 30 days."),
-        (12, "note", "Closed Won in PropSignal — handoff pending", None),
-    ],
-    "BRM-02": [
-        (1, "call", "Welcome call with Ankit, kickoff booked for Thursday", None),
-        (2, "email", "Shared onboarding checklist and data requirements", None),
-        (9, "note", "Closed Won — Bengaluru builder, VLs plus Voice AI", None),
-    ],
-    "SQY-03": [
-        (2, "email", "Chased Gurugram team for API keys", None),
-        (7, "meeting", "Integration working session with Neha", "Sandbox connected; production keys still blocked on their security review."),
-        (16, "qbr", "Q2 business review with Abhay", "Reviewed lead quality across NCR. Agreed on 3,000 QLs run-rate and a VLs pilot in Noida."),
-        (28, "call", "Weekly sync — integration timeline slipping", None),
-        (44, "email", "Shared implementation plan and milestone dates", None),
-        (61, "meeting", "Kickoff call", None),
-    ],
-    "PRE-04": [
-        (6, "call", "Checked in with Akash Rao on Voice AI adoption", "Team has not staffed the calling desk. Minutes burn is roughly a third of contract."),
-        (13, "email", "Sent September usage summary", None),
-        (21, "meeting", "Renewal planning with Priya M", "CFO wants a cost-per-qualified-lead comparison before signing."),
-        (33, "qbr", "Q2 business review", "Strong QLs performance in Bengaluru. Voice AI underused — flagged as the renewal risk."),
-        (47, "call", "Escalation debrief on lead routing", None),
-        (68, "email", "Shared Voice AI enablement guide", None),
-    ],
-    "NFS-05": [
-        (4, "call", "Pratik asked about VLs add-on pricing", None),
-        (11, "email", "Shared VLs sample output for Pune", None),
-        (24, "meeting", "Adoption review — SLs performing well", None),
-        (52, "email", "Monthly usage recap", None),
-    ],
-    "HOU-06": [
-        (19, "email", "Sent Voice AI usage nudge — no reply", None),
-        (31, "call", "Sunil flagged bandwidth issues on their side", None),
-        (48, "meeting", "Adoption check-in", None),
-        (70, "email", "Onboarding wrap-up note", None),
-    ],
-    "SET-07": [
-        (3, "email", "Shared new feature note, Ashish acknowledged", None),
-        (14, "call", "Quarterly check-in — steady VLs usage", None),
-        (38, "meeting", "Business review with Ashish", None),
-        (63, "email", "Renewal terms confirmed", None),
-    ],
-    "DIG-08": [
-        (7, "call", "Dhaval escalated lead quality again", "Third week without a resolution. Asked for a product fix ETA by Friday."),
-        (15, "email", "Shared interim filtering workaround", None),
-        (21, "note", "Escalation opened with support", None),
-        (40, "meeting", "Adoption review — QLs conversion below benchmark", None),
-    ],
-    "KRH-09": [
-        (5, "email", "Shared Bhopal market benchmark", None),
-        (18, "call", "Routine check-in, no issues", None),
-        (46, "meeting", "Half-yearly review", None),
-    ],
-    "VPS-10": [
-        (26, "email", "Sanjay out-of-office auto-reply — has left the company", None),
-        (27, "note", "LinkedIn shows Sanjay moved on. No handover named.", None),
-        (39, "call", "Sanjay raised budget freeze for next quarter", None),
-        (58, "meeting", "Adoption review with Sanjay", None),
-        (80, "email", "Renewal runway note", None),
-    ],
-    "PRO-11": [
-        (8, "email", "Chased data handoff files from Indra's team", None),
-        (17, "meeting", "Integration kickoff with Hyderabad team", None),
-        (35, "call", "Onboarding planning", None),
-        (55, "email", "Welcome pack sent", None),
-    ],
-    "FBP-12": [
-        (30, "note", "Cancellation confirmed, access ends this month", None),
-        (44, "call", "Churn conversation — budget pulled", None),
-        (72, "meeting", "Last adoption review", None),
-    ],
+# account key -> days since last recorded contact.
+#
+# Activity logging was removed, so `last_contact_at` is hand-maintained in the
+# drawer and seeded directly rather than derived from a timeline. These values
+# reproduce the intended badges: HOU-06 at 19d and VPS-10 at 26d past the
+# no-contact window, everyone else inside it.
+LAST_CONTACT_DAYS = {
+    "SBP-01": 3, "BRM-02": 1, "SQY-03": 2, "PRE-04": 6,
+    "NFS-05": 4, "HOU-06": 19, "SET-07": 3, "DIG-08": 7,
+    "KRH-09": 5, "VPS-10": 26, "PRO-11": 8, "FBP-12": 44,
 }
 
-# bucket, account key, title, type, priority, due offset days,
-# provenance, rule_key, completed days ago
 TASKS = [
     ("today", "PRE-04", "Call Akash re: usage drop", "risk", "critical", 0,
      "Alert: health dropped 14 pts in 30d", "health_drop", None),
@@ -458,7 +390,6 @@ def seed_if_empty(session: Session) -> bool:
         cost_items = [
             {"label": label, "amount": amount} for label, amount in spec.get("costs", [])
         ]
-        poc_name, poc_email, poc_phone = spec["poc"]
         account = Account(
             key=spec["key"],
             name=spec["name"],
@@ -471,9 +402,6 @@ def seed_if_empty(session: Session) -> bool:
             owner_id=csm.id,
             last_nps=spec.get("last_nps"),
             tags=[],
-            poc_name=poc_name,
-            poc_email=poc_email,
-            poc_phone=poc_phone,
             comm_modes=spec.get("comm", ["email"]),
             quoted_total=quoted_total,
             quoted_line_items=line_items,
@@ -484,6 +412,7 @@ def seed_if_empty(session: Session) -> bool:
             handoff_received_at=(
                 _dt(spec["handoff_days_ago"]) if spec.get("handoff_days_ago") else None
             ),
+            last_contact_at=_dt(LAST_CONTACT_DAYS[spec["key"]]),
         )
         session.add(account)
         session.flush()
@@ -512,6 +441,29 @@ def seed_if_empty(session: Session) -> bool:
             )
         )
 
+    # Exactly one primary per account. The POC named in the account spec is that
+    # person; match the contact already seeded for them rather than duplicating.
+    session.flush()
+    contacts_by_account: dict[str, list[Contact]] = {}
+    for c in session.exec(select(Contact)).all():
+        contacts_by_account.setdefault(c.account_id, []).append(c)
+
+    for spec in ACCOUNTS:
+        account = by_key[spec["key"]]
+        poc_name, poc_email, poc_phone = spec["poc"]
+        rows = contacts_by_account.get(account.id, [])
+        primary = next((c for c in rows if c.name == poc_name), None)
+        if primary is None:
+            primary = Contact(
+                account_id=account.id, name=poc_name, role="Primary contact",
+                status="active",
+            )
+            session.add(primary)
+        primary.is_primary = True
+        primary.email = poc_email
+        primary.phone = poc_phone
+        session.add(primary)
+
     for key, rtype, severity, note, days_ago in RISKS:
         session.add(
             Risk(
@@ -527,30 +479,6 @@ def seed_if_empty(session: Session) -> bool:
     contacts_by_account = {}
     for c in session.exec(select(Contact)).all():
         contacts_by_account.setdefault(c.account_id, []).append(c)
-
-    for key, rows in ACTIVITIES.items():
-        account = by_key[key]
-        champion = next(
-            (c for c in contacts_by_account.get(account.id, []) if c.is_champion), None
-        )
-        buyer = next(
-            (c for c in contacts_by_account.get(account.id, []) if c.is_economic_buyer),
-            None,
-        )
-        for days_ago, atype, summary, body in rows:
-            linked = None
-            if atype in ("email", "call", "meeting", "qbr"):
-                linked = buyer if atype == "qbr" and buyer else champion
-            session.add(
-                Activity(
-                    account_id=account.id,
-                    contact_id=linked.id if linked else None,
-                    type=atype,
-                    occurred_at=_dt(days_ago),
-                    summary=summary,
-                    body=body,
-                )
-            )
 
     session.commit()
 

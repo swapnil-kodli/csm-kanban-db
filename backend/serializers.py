@@ -72,6 +72,28 @@ TASK_TYPE_TITLES = {
 }
 
 
+def attention_summary(scored: dict, limit: int = 3) -> Optional[str]:
+    """One line explaining why an account ranks where it does.
+
+    The attention panel was removed, but a ranking nobody can interrogate is
+    worse than a simple visible one — so the reasoning moves to the header strip
+    rather than disappearing.
+
+    Terms are kept in the order the formula weights them, not sorted by the
+    value each happens to take, so the line reads as an explanation of the
+    scoring rather than as a leaderboard of this account's worst numbers.
+    """
+    active = [t for t in scored["terms"] if t["value"]]
+    if not active:
+        return None
+    shown = active[:limit]
+    rest = len(active) - len(shown)
+    line = " · ".join(t["detail"] for t in shown)
+    if rest:
+        line += f" · +{rest} more"
+    return line
+
+
 # --- cards -------------------------------------------------------------------
 
 def account_card(

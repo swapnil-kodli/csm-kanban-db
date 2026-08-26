@@ -719,3 +719,58 @@ input, select, textarea { font: inherit; color: inherit; }
 .settings-danger p { font-size: 12.5px; color: var(--text-2); margin-bottom: 10px; line-height: 1.5; }
 .dialog-impact { font-size: 12.5px; color: var(--text-2); line-height: 1.5; margin: 8px 0 12px; }
 .btn-icon { display: inline-flex; align-items: center; justify-content: center; padding: 0 9px; }
+
+/* --- v4: contacts, editable commercials, attention explanation ---------- */
+.attention-why { font-size: 12px; color: var(--text-2); padding-top: 6px; line-height: 1.45; }
+.attention-rank {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+  color: var(--text-3); margin-right: 8px;
+}
+
+.date-set { display: flex; align-items: center; gap: 8px; }
+.date-set input { flex: 0 0 150px; }
+
+.contact-list { display: flex; flex-direction: column; gap: 8px; }
+.contact {
+  display: flex; align-items: flex-start; gap: 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 9px 10px;
+}
+.contact.primary { border-color: var(--border-strong); background: var(--surface-2); }
+.contact-star {
+  background: none; border: 0; cursor: pointer; font-size: 15px; line-height: 1;
+  color: var(--text-3); padding: 2px;
+}
+.contact.primary .contact-star { color: var(--h-watch); }
+.contact-fields { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 5px; min-width: 0; }
+.contact-fields input {
+  font: inherit; font-size: 12.5px; padding: 5px 7px; min-width: 0;
+  border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent;
+}
+.contact-fields input:hover, .contact-fields input:focus {
+  border-color: var(--border); background: var(--surface);
+}
+.contact-flags { display: flex; flex-direction: column; gap: 3px; flex-shrink: 0; }
+.chip-red { border: 1px solid var(--h-critical); color: var(--h-critical); background: #fff5f6; }
+
+.editable-rows { display: flex; flex-direction: column; gap: 5px; margin: 8px 0; }
+.editable-rows li { display: flex; align-items: center; gap: 6px; }
+.editable-rows input {
+  font: inherit; font-size: 12.5px; padding: 5px 7px; min-width: 0; flex: 1;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.editable-rows input[type="number"] { flex: 0 0 92px; text-align: right; }
+.editable-rows .li-total { flex: 0 0 78px; text-align: right; font-weight: 600; font-size: 12.5px; }
+
+.pnl-grid input {
+  font: inherit; font-size: 15px; font-weight: 800; letter-spacing: -0.4px;
+  width: 100%; padding: 3px 6px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--surface);
+}
+.pnl-grid.derived { border-top: 1px solid var(--border); padding-top: 10px; margin-top: 10px; }
+
+/* Soft hint, never a block — quoted total is independent of its line items. */
+.soft-hint {
+  font-size: 12px; color: var(--na-text); background: var(--na-bg);
+  border: 1px solid var(--na-border); border-radius: var(--radius-sm);
+  padding: 7px 9px; margin: 6px 0; line-height: 1.45;
+}

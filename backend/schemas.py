@@ -52,12 +52,13 @@ class AccountPatch(BaseModel):
     health_note: Optional[str] = None
 
     # POC
-    poc_name: Optional[str] = None
-    poc_email: Optional[str] = None
-    poc_phone: Optional[str] = None
+    last_contact_at: Optional[datetime] = None
     comm_modes: Optional[list[CommMode]] = None
 
-    # costing — quoted_total is derived from the line items, never accepted raw
+    # Costing is fully manual now. quoted_total is an independent field: the UI
+    # shows a soft hint when it disagrees with the line items rather than
+    # overwriting what someone typed.
+    quoted_total: Optional[int] = Field(default=None, ge=0)
     quoted_line_items: Optional[list[LineItem]] = None
     quoted_at: Optional[date] = None
     quote_notes: Optional[str] = None
@@ -113,8 +114,11 @@ class ActivityCreate(BaseModel):
 
 class ContactCreate(BaseModel):
     account_id: str
+    is_primary: bool = False
     name: str = Field(min_length=1, max_length=120)
-    role: str = Field(min_length=1, max_length=120)
+    # Blank on purpose: a contact is added as an empty row and filled in inline,
+    # so requiring a role here would reject the row that creates it.
+    role: str = Field(default="", max_length=120)
     email: Optional[str] = None
     phone: Optional[str] = None
     is_champion: bool = False
@@ -123,11 +127,12 @@ class ContactCreate(BaseModel):
 
 class ContactPatch(BaseModel):
     name: Optional[str] = None
-    role: Optional[str] = None
+    role: Optional[str] = Field(default=None, max_length=120)
     email: Optional[str] = None
     phone: Optional[str] = None
     is_champion: Optional[bool] = None
     is_economic_buyer: Optional[bool] = None
+    is_primary: Optional[bool] = None
     status: Optional[Literal["active", "departed"]] = None
 
 

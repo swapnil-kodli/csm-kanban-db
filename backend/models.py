@@ -109,10 +109,8 @@ class Account(Stamped, table=True):
     entitled_seats: int = 20
     last_nps: Optional[int] = None
 
-    # --- primary POC (the drawer leads with this; `contact` holds the rest) -
-    poc_name: Optional[str] = None
-    poc_email: Optional[str] = None
-    poc_phone: Optional[str] = None
+    # POCs live in `contact`, one of which carries is_primary. The three flat
+    # poc_* fields were folded into that table in the v4 migration.
     comm_modes: list = Field(default_factory=list, sa_column=Column(JSON))
 
     # --- costing: what was quoted -----------------------------------------
@@ -138,6 +136,8 @@ class Contact(Stamped, table=True):
     account_id: str = Field(foreign_key="account.id", index=True)
     name: str
     role: str
+    # Exactly one primary per account. The Gmail panel keys off its email.
+    is_primary: bool = False
     email: Optional[str] = None
     phone: Optional[str] = None
     is_champion: bool = False

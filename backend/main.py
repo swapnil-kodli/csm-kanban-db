@@ -16,7 +16,6 @@ from engines.attention import refresh_cached_scores
 from routers import (
     accounts,
     columns,
-    activities,
     board,
     contacts,
     google,
@@ -104,7 +103,6 @@ api.include_router(board.router)
 api.include_router(columns.router)
 api.include_router(accounts.router)
 api.include_router(tasks.router)
-api.include_router(activities.router)
 api.include_router(contacts.router)
 api.include_router(search.router)
 api.include_router(metrics.router)

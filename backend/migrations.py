@@ -33,7 +33,7 @@ from sqlmodel import Session
 
 log = logging.getLogger("signal.migrations")
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # v1 lifecycle_stage -> v2 column. The v2 pipeline has no terminal-negative
 # state, so `closed` accounts land in `launch` and are logged by name for the
@@ -172,6 +172,9 @@ def migrate(session: Session) -> dict:
     v3 = _migrate_v2_to_v3(session)
     if v3.get("migrated"):
         result = {**result, "v3": v3}
+    v4 = _migrate_v3_to_v4(session)
+    if v4.get("migrated"):
+        result = {**result, "v4": v4}
     dropped = _drop_saved_views(session)
     if dropped is not None:
         result = {**result, "saved_views_dropped": dropped}
@@ -192,6 +195,104 @@ def _drop_saved_views(session: Session) -> Optional[int]:
     session.commit()
     log.warning("Dropped the savedview table (%d row(s)) — feature removed", count)
     return count
+
+
+def _migrate_v3_to_v4(session: Session) -> dict:
+    """The three flat account.poc_* fields become a primary `contact` row.
+
+    A POC is a contact; the table already held the secondaries. Folding them in
+    means one list with one primary rather than two parallel notions of the same
+    person.
+    """
+    tables = _table_names(session)
+    if "account" not in tables or "contact" not in tables:
+        return {"migrated": False, "reason": "tables not created yet"}
+
+    _ensure_meta(session)
+    account_cols = _columns(session, "account")
+    # Presence of the flat field is the trigger, same rule as every step here.
+    if "poc_name" not in account_cols:
+        return {"migrated": False, "reason": "already on the v4 schema"}
+
+    log.warning("Migrating POC fields into contact rows, v3 -> v4")
+
+    if "is_primary" not in _columns(session, "contact"):
+        session.exec(
+            text("ALTER TABLE contact ADD COLUMN is_primary BOOLEAN DEFAULT 0")
+        )
+
+    existing: dict[str, list[tuple]] = {}
+    for cid, aid, name, email in session.exec(
+        text("SELECT id, account_id, name, email FROM contact")
+    ).all():
+        existing.setdefault(aid, []).append((cid, name, email))
+
+    folded, promoted = 0, 0
+    for aid, akey, pname, pemail, pphone in session.exec(
+        text("SELECT id, key, poc_name, poc_email, poc_phone FROM account")
+    ).all():
+        rows = existing.get(aid, [])
+        match = None
+        if pname:
+            # The seed created a contact for the same person, so match rather
+            # than duplicate them.
+            match = next(
+                (r for r in rows if r[1] == pname or (pemail and r[2] == pemail)), None
+            )
+        if match:
+            session.exec(
+                # poc_email wins over whatever the contact row carried: it is
+                # the address the drawer surfaced and Gmail keyed its thread
+                # query off, so preserving it preserves behaviour. Falling back
+                # to the contact's own value only when the POC had none.
+                text("UPDATE contact SET is_primary=1, email=COALESCE(:e, email), "
+                     "phone=COALESCE(:p, phone) WHERE id=:id").bindparams(
+                    e=pemail, p=pphone, id=match[0]
+                )
+            )
+            promoted += 1
+        elif pname:
+            session.exec(
+                text(
+                    "INSERT INTO contact (id, created_at, updated_at, account_id, name, "
+                    " role, email, phone, is_champion, is_economic_buyer, status, is_primary) "
+                    "VALUES (:id, :now, :now, :aid, :name, 'Primary contact', :email, "
+                    "        :phone, 0, 0, 'active', 1)"
+                ).bindparams(
+                    id=str(uuid.uuid4()), now=datetime.utcnow(), aid=aid,
+                    name=pname, email=pemail, phone=pphone,
+                )
+            )
+            folded += 1
+        elif rows:
+            # No POC recorded but contacts exist: promote the first so every
+            # account still has exactly one primary.
+            session.exec(
+                text("UPDATE contact SET is_primary=1 WHERE id=:id").bindparams(id=rows[0][0])
+            )
+            promoted += 1
+
+    # Commit the backfill before any DDL — ALTER TABLE auto-commits and a later
+    # DDL failure would otherwise strand these writes. See the standing rule.
+    session.commit()
+
+    dropped_idx = _drop_indexes_for(session, "account", ["poc_name", "poc_email", "poc_phone"])
+    for col in ("poc_name", "poc_email", "poc_phone"):
+        if col in account_cols:
+            session.exec(text(f"ALTER TABLE account DROP COLUMN {col}"))
+
+    _set_version(session, SCHEMA_VERSION)
+    session.commit()
+    log.warning(
+        "POC migration complete: %d folded into new rows, %d existing contacts promoted",
+        folded, promoted,
+    )
+    return {
+        "migrated": True,
+        "folded": folded,
+        "promoted": promoted,
+        "indexes_dropped": dropped_idx,
+    }
 
 
 def _migrate_v2_to_v3(session: Session) -> dict:
@@ -265,7 +366,9 @@ def _migrate_v2_to_v3(session: Session) -> dict:
     dropped_idx = _drop_indexes_for(session, "account", ["column"])
     session.exec(text("ALTER TABLE account DROP COLUMN \"column\""))
 
-    _set_version(session, SCHEMA_VERSION)
+    # Each step stamps its own version; the module constant belongs to the
+    # last step, not to whichever one happens to run.
+    _set_version(session, 3)
     session.commit()
 
     for note in orphans:

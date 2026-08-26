@@ -18,14 +18,7 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
-from models import (
-    Account,
-    Activity,
-    Contact,
-    HealthSnapshot,
-    Risk,
-    UsageMetric,
-)
+from models import Account, HealthSnapshot, Risk, UsageMetric
 
 WEIGHTS = {"usage": 0.40, "engagement": 0.25, "support": 0.20, "sentiment": 0.15}
 DEFAULT_SENTIMENT = 70
@@ -131,46 +124,37 @@ def usage_component(
     return int(round(_clamp(avg_active / account.entitled_seats * 100)))
 
 
+# Recency curve. `last_contact_at` is hand-maintained, so engagement is recency
+# alone — the meeting-cadence and executive-touch terms were deleted with
+# activity logging rather than left reading a table nothing writes.
+#
+# CEIL and SLOPE are calibrated, not chosen: they are set so that migrating from
+# the old three-part composite leaves the health bands where they were. See
+# `scripts/calibrate_engagement.py`.
+RECENCY_CEIL = 78
+RECENCY_SLOPE = 2.4
+NEUTRAL_ENGAGEMENT = 70
+
+
 def engagement_component(
     session: Session, account: Account, on_day: Optional[date] = None
 ) -> int:
-    """Recency of contact, meeting cadence, and executive touch over 90 days."""
+    """Recency of the last recorded contact, and nothing else.
+
+    Unset is unknown, not neglected: it scores NEUTRAL_ENGAGEMENT rather than 0.
+    An account nobody has filled in must not read as an account nobody has
+    called. See the standing principle in engines/__init__.py.
+    """
+    if account.last_contact_at is None:
+        return NEUTRAL_ENGAGEMENT
+
     on_day = on_day or date.today()
     horizon = datetime.combine(on_day, datetime.max.time())
-    since = horizon - timedelta(days=90)
-    acts = session.exec(
-        select(Activity).where(
-            Activity.account_id == account.id,
-            Activity.occurred_at <= horizon,
-            Activity.occurred_at >= since,
-        )
-    ).all()
-    contactful = [a for a in acts if a.type in ("email", "call", "meeting", "qbr")]
+    days_since = max(0, (horizon - account.last_contact_at).days)
 
-    if contactful:
-        last = max(a.occurred_at for a in contactful)
-        days_since = max(0, (horizon - last).days)
-    else:
-        days_since = 90
+    # A pilot is given a shorter grace period than an established customer.
     grace = MODE_THRESHOLDS.get(account.mode, MODE_THRESHOLDS["customer"])["neglect_days"] // 2
-    recency = _clamp(100 - max(0, days_since - grace) * 3)
-
-    meetings = len([a for a in acts if a.type in ("meeting", "qbr")])
-    meeting_score = _clamp(meetings * 20)
-
-    buyer_ids = {
-        c.id
-        for c in session.exec(
-            select(Contact).where(
-                Contact.account_id == account.id,
-                Contact.is_economic_buyer == True,  # noqa: E712
-            )
-        ).all()
-    }
-    exec_touch = any(a.type == "qbr" or a.contact_id in buyer_ids for a in acts)
-    exec_score = 100 if exec_touch else 55
-
-    return int(round(_clamp(0.55 * recency + 0.30 * meeting_score + 0.15 * exec_score)))
+    return int(round(_clamp(RECENCY_CEIL - max(0, days_since - grace) * RECENCY_SLOPE)))
 
 
 def support_component(session: Session, account: Account) -> int:
@@ -233,18 +217,8 @@ def compute_components(session: Session, account: Account) -> dict:
 
 def recompute_account(session: Session, account: Account, commit: bool = True) -> Account:
     """Recompute cached health for one account and upsert today's snapshot."""
-    # last_contact_at is derived: notes and updates are not customer engagement.
-    last_contact = session.exec(
-        select(Activity)
-        .where(
-            Activity.account_id == account.id,
-            Activity.type.in_(("email", "call", "meeting", "qbr")),  # type: ignore[attr-defined]
-        )
-        .order_by(Activity.occurred_at.desc())  # type: ignore[attr-defined]
-        .limit(1)
-    ).first()
-    account.last_contact_at = last_contact.occurred_at if last_contact else None
-
+    # last_contact_at is hand-maintained in the drawer now; the engine reads it
+    # and never overwrites it.
     parts = compute_components(session, account)
     account.health_score = parts["score"]
     account.health_band = band_for(parts["score"])

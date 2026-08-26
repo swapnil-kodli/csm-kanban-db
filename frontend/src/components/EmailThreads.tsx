@@ -31,10 +31,11 @@ export class EmailThreadsBoundary extends Component<
 
 export function EmailThreadsPanel({
   accountId,
-  onLogActivity,
+  onMarkContacted,
 }: {
   accountId: string;
-  onLogActivity: (subject: string) => void;
+  /** A thread is evidence of contact; its date sets `last_contact_at`. */
+  onMarkContacted: (iso: string) => void;
 }) {
   const [data, setData] = useState<EmailThreadsResponse | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -91,8 +92,12 @@ export function EmailThreadsPanel({
           {expanded === t.thread_id && (
             <div className="thread-detail">
               <p className="thread-participants">{t.participants.join(", ")}</p>
-              <button className="btn btn-sm" onClick={() => onLogActivity(t.subject)}>
-                Log as activity
+              <button
+                className="btn btn-sm"
+                disabled={!t.last_message_at}
+                onClick={() => t.last_message_at && onMarkContacted(t.last_message_at)}
+              >
+                Set as last contact
               </button>
             </div>
           )}

@@ -11,7 +11,6 @@ from db import get_session
 from models import (
     Account,
     BoardColumn,
-    Activity,
     Contact,
     HealthSnapshot,
     Risk,
@@ -26,6 +25,7 @@ from engines import pnl as pnl_engine
 from engines.attention import BookContext, score_account
 from serializers import (
     BAND_DOTS,
+    attention_summary,
     CLIENT_TYPE_TITLES,
     COMM_MODE_TITLES,
     MODE_TITLES,
@@ -67,12 +67,6 @@ def get_account(account_id: str, session: Session = Depends(get_session)):
 
     contacts = session.exec(select(Contact).where(Contact.account_id == account_id)).all()
     tasks = session.exec(select(Task).where(Task.account_id == account_id)).all()
-    activities = session.exec(
-        select(Activity)
-        .where(Activity.account_id == account_id)
-        .order_by(Activity.occurred_at.desc())  # type: ignore[attr-defined]
-        .limit(50)
-    ).all()
     snapshots = session.exec(
         select(HealthSnapshot)
         .where(HealthSnapshot.account_id == account_id)
@@ -129,18 +123,15 @@ def get_account(account_id: str, session: Session = Depends(get_session)):
             "no_contact": flags["no_contact"],
             "stalled_handoff": flags["stalled_handoff"],
         },
-        # --- POC panel ------------------------------------------------------
-        "poc": {
-            "name": account.poc_name,
-            "email": account.poc_email,
-            "phone": account.poc_phone,
-        },
+
         # --- Mode of Communication -----------------------------------------
         "comm_modes": [
             {"value": m, "label": COMM_MODE_TITLES.get(m, m)} for m in comm_modes
         ],
-        # Gmail panel renders only when email is a channel and a POC email exists.
-        "show_email_threads": "email" in comm_modes and bool(account.poc_email),
+        # Gmail renders only when email is a channel and the primary contact has
+        # an address.
+        "show_email_threads": "email" in comm_modes
+        and any(c.is_primary and c.email for c in contacts),
         # --- Health Check panel ---------------------------------------------
         "health": {
             "score": account.health_score,
@@ -185,7 +176,7 @@ def get_account(account_id: str, session: Session = Depends(get_session)):
         },
         # --- Costing + PNL panels (computed server-side, never stored) ------
         "commercials": pnl_engine.compute(account),
-        "attention": scored,
+        "attention": {**scored, "summary": attention_summary(scored)},
         "contacts": [
             {
                 "id": c.id,
@@ -195,26 +186,12 @@ def get_account(account_id: str, session: Session = Depends(get_session)):
                 "phone": c.phone,
                 "is_champion": c.is_champion,
                 "is_economic_buyer": c.is_economic_buyer,
+                "is_primary": c.is_primary,
                 "status": c.status,
             }
             for c in contacts
         ],
         "tasks": [task_card(t, account) for t in sorted(tasks, key=lambda t: t.due_date)],
-        "activities": [
-            {
-                "id": a.id,
-                "type": a.type,
-                "occurred_at": a.occurred_at.isoformat(),
-                "summary": a.summary,
-                "body": a.body,
-                "contact_id": a.contact_id,
-                "contact_name": contacts_by_id[a.contact_id].name
-                if a.contact_id and a.contact_id in contacts_by_id
-                else None,
-                "created_task_id": a.created_task_id,
-            }
-            for a in activities
-        ],
         "risks": [
             {
                 "id": r.id,
@@ -282,19 +259,6 @@ def patch_account(
     account.updated_at = datetime.utcnow()
     session.add(account)
 
-    # Promotion from pilot to customer is a milestone worth a timeline entry.
-    if "mode" in data and account.mode != previous_mode:
-        session.add(
-            Activity(
-                account_id=account.id,
-                type="update",
-                occurred_at=datetime.utcnow(),
-                summary=(
-                    f"Engagement moved from {MODE_TITLES.get(previous_mode, previous_mode)} "
-                    f"to {MODE_TITLES.get(account.mode, account.mode)}"
-                ),
-            )
-        )
     session.commit()
 
     health_engine.recompute_account(session, account)

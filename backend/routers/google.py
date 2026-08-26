@@ -267,11 +267,34 @@ def disconnect(session: Session = Depends(get_session)):
     return {"connected": False}
 
 
+def invalidate_account_threads(account_id: str) -> None:
+    """Drop one account's cached threads.
+
+    Called whenever the primary contact changes or their address is edited —
+    the cache is keyed on the account but the query is built from that email,
+    so a stale entry would keep answering for the wrong person.
+    """
+    _thread_cache.pop(account_id, None)
+
+
+def primary_email(session: Session, account: Account) -> Optional[str]:
+    from models import Contact
+
+    primary = session.exec(
+        select(Contact).where(
+            Contact.account_id == account.id,
+            Contact.is_primary == True,  # noqa: E712
+        )
+    ).first()
+    return primary.email if primary else None
+
+
 def fetch_threads(session: Session, account: Account, limit: int = 20) -> dict:
     """The four states the panel must handle, resolved server-side."""
     if not gmail_enabled():
         return {"state": "disabled", "threads": []}
-    if not account.poc_email:
+    poc_email = primary_email(session, account)
+    if not poc_email:
         return {"state": "no_poc_email", "threads": []}
     cred = _credential(session)
     if cred is None:
@@ -283,7 +306,7 @@ def fetch_threads(session: Session, account: Account, limit: int = 20) -> dict:
 
     try:
         token = _access_token(session, cred)
-        query = urllib.parse.quote(f"from:{account.poc_email} OR to:{account.poc_email}")
+        query = urllib.parse.quote(f"from:{poc_email} OR to:{poc_email}")
         listing = _get_json(
             f"{GMAIL_API}/users/me/threads?maxResults={limit}&q={query}", token
         )

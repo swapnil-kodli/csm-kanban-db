@@ -24,6 +24,9 @@ export type Mode = "pilot" | "customer";
 export type ClientType = "voice_ai_only" | "data_plus_voice_ai";
 export type CommMode = "whatsapp" | "email";
 export type GroupBy = "none" | "priority" | "mode" | "client_type" | "workstream";
+export type TaskType =
+  | "onboarding" | "risk" | "renewal" | "expansion" | "checkin" | "escalation" | "admin";
+export type TaskPriority = "critical" | "high" | "normal";
 export type TaskBucket = "today" | "this_week" | "follow_up" | "waiting" | "done";
 
 /**
@@ -151,6 +154,18 @@ export interface Commercials {
   quote_gap_pct: number | null;
 }
 
+export interface Contact {
+  id: string;
+  name: string;
+  role: string;
+  email: string | null;
+  phone: string | null;
+  is_champion: boolean;
+  is_economic_buyer: boolean;
+  is_primary: boolean;
+  status: string;
+}
+
 export interface AttentionTerm {
   label: string;
   detail: string;
@@ -211,7 +226,6 @@ export interface AccountDetail {
     no_contact: boolean;
     stalled_handoff: boolean;
   };
-  poc: { name: string | null; email: string | null; phone: string | null };
   comm_modes: { value: CommMode; label: string }[];
   show_email_threads: boolean;
   health: {
@@ -236,28 +250,9 @@ export interface AccountDetail {
     snapshots: { date: string; score: number }[];
   };
   commercials: Commercials;
-  attention: { score: number; terms: AttentionTerm[] };
-  contacts: {
-    id: string;
-    name: string;
-    role: string;
-    email: string | null;
-    phone: string | null;
-    is_champion: boolean;
-    is_economic_buyer: boolean;
-    status: string;
-  }[];
+  attention: { score: number; terms: AttentionTerm[]; summary: string | null };
+  contacts: Contact[];
   tasks: TaskCard[];
-  activities: {
-    id: string;
-    type: string;
-    occurred_at: string;
-    summary: string;
-    body: string | null;
-    contact_id: string | null;
-    contact_name: string | null;
-    created_task_id: string | null;
-  }[];
   risks: {
     id: string;
     type: string;

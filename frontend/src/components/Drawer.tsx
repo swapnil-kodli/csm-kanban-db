@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Sparkline } from "./Sparkline";
 import { TaskRow } from "./Cards";
 import { EmailThreadsBoundary, EmailThreadsPanel } from "./EmailThreads";
-import { formatINR, inrExact, isoPlusDays, relativeDate, shortDate, velocityGlyph } from "../lib/format";
-import type { AccountDetail, ClientType, ColumnConfig, CommMode, Mode, TaskBucket, Workstream, TaskCard } from "../lib/types";
+import { formatINR, inrExact, velocityGlyph } from "../lib/format";
+import type { AccountDetail, ClientType, CommMode, CostItem, LineItem, Mode, Workstream, TaskCard } from "../lib/types";
 
 const WORKSTREAMS: { value: Workstream; label: string }[] = [
   { value: "bot_making", label: "Bot-Making" },
@@ -60,47 +60,71 @@ function Field({
 
 export function Drawer({
   detail,
-  columns,
   onClose,
   onPatch,
-  onLogActivity,
   onToggleTask,
+  onAddTask,
   onOverride,
   onClearOverride,
+  onAddContact,
+  onPatchContact,
+  onDeleteContact,
 }: {
   detail: AccountDetail;
-  /** Column options come from config — nothing here assumes a fixed set. */
-  columns: ColumnConfig[];
   onClose: () => void;
   onPatch: (patch: Record<string, unknown>) => void;
-  onLogActivity: (payload: {
-    type: string;
-    summary: string;
-    create_task?: { title: string; due_date: string; bucket: TaskBucket };
-  }) => void;
   onToggleTask: (task: TaskCard) => void;
+  onAddTask: () => void;
   onOverride: (band: string, reason: string) => void;
   onClearOverride: () => void;
+  onAddContact: () => void;
+  onPatchContact: (id: string, patch: Record<string, unknown>) => void;
+  onDeleteContact: (id: string) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [logType, setLogType] = useState("call");
-  const [summary, setSummary] = useState("");
-  const [alsoTask, setAlsoTask] = useState(false);
-  const [taskTitle, setTaskTitle] = useState("");
   const [overrideOpen, setOverrideOpen] = useState(false);
   const [overrideBand, setOverrideBand] = useState("at_risk");
   const [overrideReason, setOverrideReason] = useState("");
   const [note, setNote] = useState(detail.health.note ?? "");
 
-  const { account, poc, health, commercials, attention } = detail;
+  const { account, health, commercials, attention } = detail;
   const vel = velocityGlyph(health.velocity);
 
-  // The composer defaults to whichever channel this client actually uses.
-  useEffect(() => {
-    const first = detail.comm_modes[0]?.value;
-    if (first === "email") setLogType("email");
-    else if (first === "whatsapp") setLogType("call");
-  }, [detail.comm_modes]);
+  const lineItemsSum = commercials.quoted_line_items.reduce(
+    (sum, li) => sum + li.qty * li.rate,
+    0
+  );
+
+  function writeLineItems(next: LineItem[]) {
+    onPatch({ quoted_line_items: next });
+  }
+  function patchLineItem(index: number, patch: Partial<LineItem>) {
+    const next = commercials.quoted_line_items.map((li, i) =>
+      i === index ? { ...li, ...patch } : li
+    );
+    writeLineItems(next);
+  }
+  function addLineItem() {
+    writeLineItems([...commercials.quoted_line_items, { offering: "QLs", qty: 0, rate: 500 }]);
+  }
+  function removeLineItem(index: number) {
+    writeLineItems(commercials.quoted_line_items.filter((_, i) => i !== index));
+  }
+
+  function writeCostItems(next: CostItem[]) {
+    onPatch({ cost_items: next });
+  }
+  function patchCostItem(index: number, patch: Partial<CostItem>) {
+    writeCostItems(
+      commercials.cost_items.map((c, i) => (i === index ? { ...c, ...patch } : c))
+    );
+  }
+  function addCostItem() {
+    writeCostItems([...commercials.cost_items, { label: "New cost", amount: 0 }]);
+  }
+  function removeCostItem(index: number) {
+    writeCostItems(commercials.cost_items.filter((_, i) => i !== index));
+  }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -110,30 +134,6 @@ export function Drawer({
     ref.current?.querySelector<HTMLElement>("button, input, select")?.focus();
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
-
-  const grouped = useMemo(() => {
-    const out: Record<string, typeof detail.activities> = {};
-    for (const a of detail.activities) {
-      const day = a.occurred_at.slice(0, 10);
-      (out[day] ||= []).push(a);
-    }
-    return Object.entries(out);
-  }, [detail.activities]);
-
-  function submitLog() {
-    if (!summary.trim()) return;
-    onLogActivity({
-      type: logType,
-      summary: summary.trim(),
-      create_task:
-        alsoTask && taskTitle.trim()
-          ? { title: taskTitle.trim(), bucket: "this_week" as TaskBucket, due_date: isoPlusDays(3) }
-          : undefined,
-    });
-    setSummary("");
-    setTaskTitle("");
-    setAlsoTask(false);
-  }
 
   return (
     <>
@@ -161,6 +161,15 @@ export function Drawer({
                 <span>Override set {health.override.age_days}d ago — still accurate?</span>
               )}
             </div>
+          )}
+          {/* The ranking has to stay interrogable. Terms keep the order the
+              formula weights them, so this reads as an explanation of the
+              scoring rather than a leaderboard of this account's worst numbers. */}
+          {attention.summary && (
+            <p className="attention-why">
+              <span className="attention-rank">Attention {Math.round(attention.score)}</span>
+              {attention.summary}
+            </p>
           )}
         </header>
 
@@ -194,43 +203,113 @@ export function Drawer({
                 ))}
               </select>
             </Field>
-            <Field label="Column">
-              <select
-                value={account.column_id}
-                onChange={(e) => onPatch({ column_id: e.target.value })}
-              >
-                {columns
-                  .filter((c) => !c.is_archived || c.id === account.column_id)
-                  .map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.label}
-                      {c.is_archived ? " (archived)" : ""}
-                    </option>
-                  ))}
-              </select>
+            {/* Column is deliberately not editable here. Drag is the only way
+                to move an engagement through the pipeline — two paths to the
+                same state drift apart. The current column shows as a read-only
+                chip in the header. */}
+            <Field label="Last contact">
+              {/* Hand-maintained since activity logging was removed, so it has
+                  to be one click. Unset is neutral everywhere it is read, never
+                  a penalty — an account nobody filled in is not an account
+                  nobody called. */}
+              <div className="date-set">
+                <input
+                  type="date"
+                  value={account.last_contact_at ? account.last_contact_at.slice(0, 10) : ""}
+                  onChange={(e) =>
+                    onPatch({ last_contact_at: e.target.value ? `${e.target.value}T12:00:00` : null })
+                  }
+                />
+                <button
+                  className="btn btn-sm"
+                  onClick={() => onPatch({ last_contact_at: new Date().toISOString() })}
+                >
+                  Today
+                </button>
+                <span className="panel-muted">
+                  {account.days_since_contact === null
+                    ? "not recorded"
+                    : `${account.days_since_contact}d ago`}
+                </span>
+              </div>
             </Field>
           </Panel>
 
-          <Panel title="POC">
-            <Field label="Name">
-              <input
-                defaultValue={poc.name ?? ""}
-                onBlur={(e) => onPatch({ poc_name: e.target.value })}
-              />
-            </Field>
-            <Field label="Email">
-              <input
-                type="email"
-                defaultValue={poc.email ?? ""}
-                onBlur={(e) => onPatch({ poc_email: e.target.value })}
-              />
-            </Field>
-            <Field label="Phone">
-              <input
-                defaultValue={poc.phone ?? ""}
-                onBlur={(e) => onPatch({ poc_phone: e.target.value })}
-              />
-            </Field>
+          <Panel
+            title="Contacts"
+            aside={
+              <button className="btn btn-sm" onClick={() => onAddContact()}>
+                + Add
+              </button>
+            }
+          >
+            <ul className="contact-list">
+              {detail.contacts.map((c) => (
+                <li key={c.id} className={c.is_primary ? "contact primary" : "contact"}>
+                  <button
+                    className="contact-star"
+                    aria-label={c.is_primary ? `${c.name} is the primary contact` : `Make ${c.name} primary`}
+                    aria-pressed={c.is_primary}
+                    title={c.is_primary ? "Primary contact" : "Set as primary"}
+                    onClick={() => !c.is_primary && onPatchContact(c.id, { is_primary: true })}
+                  >
+                    {c.is_primary ? "★" : "☆"}
+                  </button>
+                  <div className="contact-fields">
+                    <input
+                      key={`${c.id}:name:${c.name}`}
+                      defaultValue={c.name}
+                      aria-label="Name"
+                      onBlur={(e) =>
+                        e.target.value.trim() !== c.name &&
+                        onPatchContact(c.id, { name: e.target.value.trim() })
+                      }
+                    />
+                    <input
+                      key={`${c.id}:role:${c.role}`}
+                      defaultValue={c.role}
+                      aria-label="Role"
+                      onBlur={(e) =>
+                        e.target.value.trim() !== c.role &&
+                        onPatchContact(c.id, { role: e.target.value.trim() })
+                      }
+                    />
+                    <input
+                      key={`${c.id}:email:${c.email ?? ""}`}
+                      type="email"
+                      defaultValue={c.email ?? ""}
+                      aria-label="Email"
+                      onBlur={(e) =>
+                        e.target.value.trim() !== (c.email ?? "") &&
+                        onPatchContact(c.id, { email: e.target.value.trim() })
+                      }
+                    />
+                    <input
+                      key={`${c.id}:phone:${c.phone ?? ""}`}
+                      defaultValue={c.phone ?? ""}
+                      aria-label="Phone"
+                      onBlur={(e) =>
+                        e.target.value.trim() !== (c.phone ?? "") &&
+                        onPatchContact(c.id, { phone: e.target.value.trim() })
+                      }
+                    />
+                  </div>
+                  <div className="contact-flags">
+                    {c.is_champion && <span className="chip chip-grey">Champion</span>}
+                    {c.is_economic_buyer && <span className="chip chip-grey">Econ buyer</span>}
+                    {c.status === "departed" && <span className="chip chip-red">Departed</span>}
+                  </div>
+                  <button
+                    className="btn btn-sm subtle"
+                    onClick={() => onDeleteContact(c.id)}
+                    aria-label={`Delete ${c.name}`}
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+              {detail.contacts.length === 0 && <li className="panel-muted">No contacts yet</li>}
+            </ul>
           </Panel>
 
           <Panel title="Mode of Communication">
@@ -260,11 +339,12 @@ export function Drawer({
           {detail.show_email_threads && (
             <Panel title="Email Threads">
               <EmailThreadsBoundary>
+                {/* Activity logging is gone, so a thread's value now is as
+                    evidence of contact: its date sets the field the engagement
+                    score reads. */}
                 <EmailThreadsPanel
                   accountId={account.id}
-                  onLogActivity={(subject) =>
-                    onLogActivity({ type: "email", summary: subject })
-                  }
+                  onMarkContacted={(iso) => onPatch({ last_contact_at: iso })}
                 />
               </EmailThreadsBoundary>
             </Panel>
@@ -339,23 +419,66 @@ export function Drawer({
 
           <Panel title="Costing">
             <Field label="Quoted total">
-              <strong>{inrExact(commercials.quoted_total)}</strong>
+              {/* Independent of the line items on purpose. A soft hint when they
+                  disagree, never an overwrite of what someone typed. */}
+              <input
+                type="number"
+                min={0}
+                key={`qt:${commercials.quoted_total}`}
+                defaultValue={commercials.quoted_total}
+                onBlur={(e) => {
+                  const v = Number(e.target.value);
+                  if (v !== commercials.quoted_total) onPatch({ quoted_total: v });
+                }}
+              />
             </Field>
+            {lineItemsSum !== commercials.quoted_total && (
+              <p className="soft-hint">
+                Line items add up to {inrExact(lineItemsSum)}, which differs from the
+                quoted total by {inrExact(Math.abs(lineItemsSum - commercials.quoted_total))}.
+              </p>
+            )}
             <Field label="Quoted on">
-              {commercials.quoted_at ? shortDate(commercials.quoted_at) : "—"}
+              <input
+                type="date"
+                key={`qa:${commercials.quoted_at ?? ""}`}
+                defaultValue={commercials.quoted_at ?? ""}
+                onBlur={(e) => onPatch({ quoted_at: e.target.value || null })}
+              />
             </Field>
-            <ul className="line-items">
+
+            <ul className="editable-rows">
               {commercials.quoted_line_items.map((li, i) => (
                 <li key={i}>
-                  <span>{li.offering}</span>
-                  <span className="li-calc">
-                    {li.qty.toLocaleString("en-IN")} × ₹{li.rate}
-                  </span>
+                  <input
+                    aria-label="Offering"
+                    defaultValue={li.offering}
+                    onBlur={(e) => patchLineItem(i, { offering: e.target.value })}
+                  />
+                  <input
+                    type="number" min={0} aria-label="Quantity"
+                    defaultValue={li.qty}
+                    onBlur={(e) => patchLineItem(i, { qty: Number(e.target.value) })}
+                  />
+                  <input
+                    type="number" min={0} aria-label="Rate"
+                    defaultValue={li.rate}
+                    onBlur={(e) => patchLineItem(i, { rate: Number(e.target.value) })}
+                  />
                   <span className="li-total">{formatINR(li.qty * li.rate)}</span>
+                  <button className="btn btn-sm subtle" aria-label="Remove line" onClick={() => removeLineItem(i)}>×</button>
                 </li>
               ))}
             </ul>
-            {commercials.quote_notes && <p className="quote-notes">{commercials.quote_notes}</p>}
+            <button className="btn btn-sm" onClick={addLineItem}>+ Add line item</button>
+
+            <Field label="Quote notes">
+              <textarea
+                key={`qn:${commercials.quote_notes ?? ""}`}
+                defaultValue={commercials.quote_notes ?? ""}
+                onBlur={(e) => onPatch({ quote_notes: e.target.value })}
+              />
+            </Field>
           </Panel>
 
           <Panel title="PNL">
@@ -367,7 +490,15 @@ export function Drawer({
               </div>
               <div>
                 <span className="field-label">Recognised</span>
-                <strong>{inrExact(commercials.revenue_recognised)}</strong>
+                <input
+                  type="number" min={0}
+                  key={`rr:${commercials.revenue_recognised}`}
+                  defaultValue={commercials.revenue_recognised}
+                  onBlur={(e) => {
+                    const v = Number(e.target.value);
+                    if (v !== commercials.revenue_recognised) onPatch({ revenue_recognised: v });
+                  }}
+                />
               </div>
               <div>
                 <span className="field-label">Drift</span>
@@ -377,16 +508,30 @@ export function Drawer({
                 </strong>
               </div>
             </div>
-            <ul className="line-items">
+
+            <ul className="editable-rows">
               {commercials.cost_items.map((c, i) => (
                 <li key={i}>
-                  <span>{c.label}</span>
-                  <span className="li-total">{formatINR(c.amount)}</span>
+                  <input
+                    aria-label="Cost label"
+                    defaultValue={c.label}
+                    onBlur={(e) => patchCostItem(i, { label: e.target.value })}
+                  />
+                  <input
+                    type="number" min={0} aria-label="Amount"
+                    defaultValue={c.amount}
+                    onBlur={(e) => patchCostItem(i, { amount: Number(e.target.value) })}
+                  />
+                  <button className="btn btn-sm subtle" aria-label="Remove cost" onClick={() => removeCostItem(i)}>×</button>
                 </li>
               ))}
               {commercials.cost_items.length === 0 && <li className="panel-muted">No costs recorded</li>}
             </ul>
-            <div className="pnl-grid">
+            <button className="btn btn-sm" onClick={addCostItem}>+ Add cost</button>
+
+            {/* Derived, never editable. A typed margin that disagrees with its
+                own inputs is worse than no margin at all. */}
+            <div className="pnl-grid derived">
               <div>
                 <span className="field-label">Total cost</span>
                 <strong>{inrExact(commercials.total_cost)}</strong>
@@ -407,76 +552,20 @@ export function Drawer({
             )}
           </Panel>
 
-          <Panel title={`Tasks (${detail.tasks.filter((t) => t.status === "open").length})`}>
+          <Panel
+            title={`Tasks (${detail.tasks.filter((t) => t.status === "open").length})`}
+            aside={
+              <button className="btn btn-sm" onClick={onAddTask}>
+                + Add task
+              </button>
+            }
+          >
             {detail.tasks.map((t) => (
               <TaskRow key={t.id} task={t} onToggle={onToggleTask} />
             ))}
             {detail.tasks.length === 0 && <p className="panel-muted">No tasks</p>}
           </Panel>
 
-          <Panel title="Activity" aside={<span className="panel-muted">{relativeDate(account.last_contact_at)}</span>}>
-            <div className="composer">
-              <select value={logType} onChange={(e) => setLogType(e.target.value)}>
-                <option value="call">Call</option>
-                <option value="email">Email</option>
-                <option value="meeting">Meeting</option>
-                <option value="note">Note</option>
-                <option value="qbr">QBR</option>
-              </select>
-              <input
-                placeholder="What happened?"
-                value={summary}
-                onChange={(e) => setSummary(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && submitLog()}
-              />
-              <button className="btn btn-sm" onClick={submitLog} disabled={!summary.trim()}>
-                Log
-              </button>
-            </div>
-            <label className="composer-toggle">
-              <input type="checkbox" checked={alsoTask} onChange={(e) => setAlsoTask(e.target.checked)} />
-              Also create next action
-            </label>
-            {alsoTask && (
-              <input
-                className="composer-task"
-                placeholder="Next action"
-                value={taskTitle}
-                onChange={(e) => setTaskTitle(e.target.value)}
-              />
-            )}
-            <div className="timeline">
-              {grouped.map(([day, items]) => (
-                <div className="timeline-day" key={day}>
-                  <p className="timeline-date">{shortDate(day)}</p>
-                  {items.map((a) => (
-                    <div className="timeline-item" key={a.id}>
-                      <span className={`t-type t-${a.type}`}>{a.type}</span>
-                      <p className="t-summary">{a.summary}</p>
-                      {a.body && <p className="t-body">{a.body}</p>}
-                    </div>
-                  ))}
-                </div>
-              ))}
-            </div>
-          </Panel>
-
-          <Panel title="Why this ranks">
-            <ul className="terms">
-              {attention.terms
-                .filter((t) => t.value)
-                .map((t) => (
-                  <li key={t.label}>
-                    <span>{t.label}</span>
-                    <span className="term-detail">{t.detail}</span>
-                    <span className="term-value">+{t.value}</span>
-                  </li>
-                ))}
-              {attention.terms.every((t) => !t.value) && (
-                <li className="panel-muted">Nothing flagged</li>
-              )}
-            </ul>
-          </Panel>
         </div>
       </aside>
     </>

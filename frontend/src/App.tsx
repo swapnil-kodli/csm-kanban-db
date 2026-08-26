@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import type {
-  AccountCard, AccountDetail, BoardResponse, ColumnConfig, Filters, GroupBy,
-  HealthBand, Metric, TaskBucket,
+  AccountCard, AccountDetail, BoardResponse, Filters, GroupBy,
+  HealthBand, Metric, TaskBucket, TaskPriority, TaskType,
 } from "./lib/types";
 import { apiDelete, apiGet, apiPatch, apiPost, getSource, onSourceChange, qs } from "./lib/api";
 import type { SourceState } from "./lib/api";
@@ -46,13 +46,8 @@ export default function App() {
     readStored(GROUP_KEY, "none", ["none", "priority", "mode", "client_type", "workstream"] as const)
   );
   const [collapsedLanes, setCollapsedLanes] = useState<Set<string>>(new Set());
-  const [columnConfig, setColumnConfig] = useState<ColumnConfig[]>([]);
   const onSettings = location.pathname.replace(/\/+$/, "").endsWith("/settings");
 
-  const loadColumns = useCallback(async () => {
-    const d = await apiGet<{ columns: ColumnConfig[] }>("/columns");
-    setColumnConfig(d.columns);
-  }, []);
 
   /**
    * Keep a trailing slash on the mount path.
@@ -152,7 +147,6 @@ export default function App() {
           apiGet<{ user: typeof user }>("/me"),
         ]);
         if (cancelled) return;
-        await loadColumns();
         setUser(me.user);
         setFatal(null);
       } catch (err) {
@@ -181,6 +175,34 @@ export default function App() {
   const openAccount = useCallback((accountId: string) => setOpenAccountId(accountId), []);
 
   // --- writes ---------------------------------------------------------------
+  async function addContact(accountId: string) {
+    try {
+      await apiPost("/contacts", { account_id: accountId, name: "New contact", role: "" });
+      await loadDetail(accountId);
+    } catch {
+      toast("Could not add that contact", true);
+    }
+  }
+
+  async function patchContact(accountId: string, id: string, patch: Record<string, unknown>) {
+    try {
+      await apiPatch(`/contacts/${id}`, patch);
+      await Promise.all([loadDetail(accountId), refresh()]);
+    } catch (e) {
+      // A 409 here is the primary-contact guard; show what it said.
+      toast(e instanceof Error ? e.message : "Could not save that contact", true);
+    }
+  }
+
+  async function deleteContact(accountId: string, id: string) {
+    try {
+      await apiDelete(`/contacts/${id}`);
+      await loadDetail(accountId);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not delete that contact", true);
+    }
+  }
+
   async function patchAccount(accountId: string, patch: Record<string, unknown>) {
     try {
       await apiPatch(`/accounts/${accountId}`, patch);
@@ -218,16 +240,6 @@ export default function App() {
     }
   }
 
-  async function logActivity(payload: { type: string; summary: string; create_task?: { title: string; due_date: string; bucket: TaskBucket } }) {
-    if (!openAccountId) return;
-    try {
-      await apiPost(`/accounts/${openAccountId}/activities`, payload);
-      toast(payload.create_task ? "Activity logged, next action created" : "Activity logged");
-      await Promise.all([loadDetail(openAccountId), refresh()]);
-    } catch {
-      toast("Could not log that activity", true);
-    }
-  }
 
   async function toggleTask(taskId: string, done: boolean) {
     try {
@@ -239,9 +251,20 @@ export default function App() {
     }
   }
 
-  async function createTask(accountId: string, title: string, bucket: TaskBucket, due?: string) {
+  async function createTask(
+    accountId: string,
+    title: string,
+    bucket: TaskBucket,
+    due?: string,
+    type: TaskType = "checkin",
+    priority: TaskPriority = "normal"
+  ) {
     try {
-      await apiPost("/tasks", { account_id: accountId, title, bucket, due_date: due });
+      // No provenance: that string means "an alert raised this", and a manual
+      // task must not claim it.
+      await apiPost("/tasks", {
+        account_id: accountId, title, bucket, due_date: due, type, priority,
+      });
       toast("Task created");
       if (openAccountId) await loadDetail(openAccountId);
       await refresh();
@@ -310,11 +333,12 @@ export default function App() {
             g === "none" ? "workstream" : g === "workstream" ? "mode" : g === "mode" ? "priority" : "none"
           );
           break;
-        case "c": {
-          const accountId = openAccountId ?? visibleCards[0]?.account_id;
-          if (accountId) setNewTaskFor(accountId);
+        case "c":
+          // Open the picker with no account preselected when none is open.
+          // Silently attaching a task to whatever sorted first is how a board
+          // stops being trustworthy.
+          setNewTaskFor(openAccountId ?? "");
           break;
-        }
         case "n":
           if (openAccountId) composerRef.current?.focus();
           break;
@@ -359,17 +383,14 @@ export default function App() {
         onGroupBy={setGroupBy}
         onFilters={(f) => { setActiveMetric(null); setFilters(f); }}
         onOpenPalette={() => { setPaletteOpen(true); searchRef.current?.blur(); }}
-        onNewTask={() => setNewTaskFor(openAccountId ?? visibleCards[0]?.account_id ?? null)}
+        onNewTask={() => setNewTaskFor(openAccountId ?? "")}
       />
 
       {degraded && <DegradedBanner onRetry={() => refresh()} />}
 
       {onSettings ? (
         <Settings
-          onChanged={() => {
-            loadColumns();
-            refresh();
-          }}
+          onChanged={refresh}
         />
       ) : (
         <>
@@ -421,13 +442,15 @@ export default function App() {
       {detail && openAccountId && (
         <Drawer
           detail={detail}
-          columns={columnConfig}
           onClose={() => setOpenAccountId(null)}
           onPatch={(patch) => patchAccount(openAccountId, patch)}
-          onLogActivity={logActivity}
           onToggleTask={(task) => toggleTask(task.id, task.status !== "done")}
           onOverride={(band, reason) => saveOverride(band as HealthBand, reason)}
           onClearOverride={clearOverride}
+          onAddTask={() => setNewTaskFor(openAccountId)}
+          onAddContact={() => addContact(openAccountId)}
+          onPatchContact={(id, patch) => patchContact(openAccountId, id, patch)}
+          onDeleteContact={(id) => deleteContact(openAccountId, id)}
         />
       )}
 
@@ -443,14 +466,14 @@ export default function App() {
         />
       )}
 
-      {newTaskFor && (
+      {newTaskFor !== null && (
         <NewTaskDialog
-          accountName={
-            visibleCards.find((c) => c.account_id === newTaskFor)?.kind === "account"
-              ? (visibleCards.find((c) => c.account_id === newTaskFor) as { name: string }).name
-              : detail?.account.name ?? "account"
-          }
-          onSubmit={(title, bucket, due) => { createTask(newTaskFor, title, bucket, due); setNewTaskFor(null); }}
+          accounts={visibleCards.map((c) => ({ id: c.account_id, name: c.name, key: c.key }))}
+          initialAccountId={newTaskFor}
+          onSubmit={(accountId, title, bucket, due, type, priority) => {
+            createTask(accountId, title, bucket, due, type, priority);
+            setNewTaskFor(null);
+          }}
           onClose={() => setNewTaskFor(null)}
         />
       )}
@@ -459,7 +482,7 @@ export default function App() {
         <CommandPalette
             onClose={() => setPaletteOpen(false)}
           onOpenAccount={openAccount}
-              onNewTask={() => setNewTaskFor(openAccountId ?? visibleCards[0]?.account_id ?? null)}
+              onNewTask={() => setNewTaskFor(openAccountId ?? "")}
           onLogActivity={() => composerRef.current?.focus()}
         />
       )}
