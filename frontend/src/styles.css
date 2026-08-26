@@ -161,6 +161,10 @@ input, select, textarea { font: inherit; color: inherit; }
   height: 32px; padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
   font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px;
   background: var(--surface); white-space: nowrap;
+  /* Settings and Trash are <Link>s wearing .btn. Without these they inherit the
+     browser's anchor defaults and render underlined in link blue, which is not
+     what a button next to other buttons should look like. */
+  color: var(--text); text-decoration: none; cursor: pointer;
 }
 .btn:hover { border-color: var(--accent); }
 .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
@@ -500,7 +504,13 @@ input, select, textarea { font: inherit; color: inherit; }
 .skeleton-card { height: 150px; }
 .skeleton-col { flex: 0 0 320px; display: flex; flex-direction: column; gap: 11px; }
 
-.empty-state { display: grid; place-items: center; height: 100%; text-align: center; gap: 8px; color: var(--text-3); }
+/* Flex column, not grid. `place-items: center` on a grid still stretches the
+   implicit rows to fill the container, so the heading, the copy and the button
+   ended up spread across the whole board height instead of grouped. */
+.empty-state {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  height: 100%; min-height: 320px; text-align: center; gap: 10px; color: var(--text-3);
+}
 .empty-state h2 { font-size: 15px; font-weight: 700; color: var(--text); margin: 0; }
 .empty-state p { font-size: 12.5px; margin: 0; max-width: 340px; line-height: 1.5; }
 
@@ -792,6 +802,9 @@ input, select, textarea { font: inherit; color: inherit; }
   font-variant-numeric: tabular-nums;
 }
 .btn-icon .btn-count { margin-left: 4px; }
+/* A counted icon button needs room for both. .btn-icon pins width to 32px,
+   which pushed the icon out of the box and left a bare number. */
+.btn-icon:has(.btn-count) { width: auto; padding: 0 9px; }
 
 /* The new-client dialog carries four required fields plus an optional block,
    so it is wider than the single-purpose dialogs and lays fields out in pairs. */

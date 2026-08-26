@@ -12,10 +12,13 @@ const CLIENT_TYPES: { value: ClientType; label: string }[] = [
   { value: "data_plus_voice_ai", label: "Data + Voice AI" },
 ];
 
-const WORKSTREAMS: { value: Workstream; label: string; glyph: string }[] = [
-  { value: "bot_making", label: "Bot-Making", glyph: "◔" },
-  { value: "data_procurement", label: "Data Procurement", glyph: "◑" },
-  { value: "voice_ai_calling", label: "Voice AI Calling", glyph: "◕" },
+// No progress glyph here, unlike the card. At chip size ◔/◑/◕ render as
+// specks that read as rendering artifacts, and the label is right next to
+// them anyway — the glyph earns its place on a dense card, not in a form.
+const WORKSTREAMS: { value: Workstream; label: string }[] = [
+  { value: "bot_making", label: "Bot-Making" },
+  { value: "data_procurement", label: "Data Procurement" },
+  { value: "voice_ai_calling", label: "Voice AI Calling" },
 ];
 
 const COMM_MODES: { value: CommMode; label: string }[] = [
@@ -160,7 +163,7 @@ export function NewClientDialog({
                 aria-pressed={workstream === w.value}
                 onClick={() => setWorkstream(w.value)}
               >
-                <span aria-hidden="true">{w.glyph}</span> {w.label}
+                {w.label}
               </button>
             ))}
           </div>
