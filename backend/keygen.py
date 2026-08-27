@@ -1,11 +1,11 @@
-"""Derivation of the Jira-style account key (SBP-01, ACM-02, ...).
+"""Derivation of the Jira-style keys: Company (PRE-04) and Deal (PRE-04-01).
 
-The key is the client's stable public identifier: it prints on the card, it is
-what someone types into search, and it is what the hard-delete confirmation asks
-you to type back. So it has three properties, in this order:
+A key is the stable public identifier: it prints on the card, it is what someone
+types into search, and it is what the hard-delete confirmation asks you to type
+back. So it has three properties, in this order:
 
-  1. Unique. `account.key` carries a unique index. A duplicate is not a cosmetic
-     problem, it is a 500 at insert time.
+  1. Unique. Both `company.key` and `deal.key` carry a unique index. A duplicate
+     is not a cosmetic problem, it is a 500 at insert time.
   2. Immutable. Nothing in the API can change it after create. Renaming a client
      from "Sunbeam" to "Sunbeam Retail" must not orphan a filter or a bookmark.
   3. Derived, not typed. Nobody should have to invent one.
@@ -26,7 +26,7 @@ from typing import Iterable, Optional
 
 from sqlmodel import Session, select
 
-from models import Account
+from models import Company, Deal
 
 # Three letters is the house style (SBP, ACM). Two is allowed for a one-word,
 # short name; anything shorter is padded from the alphabet rather than left
@@ -59,22 +59,21 @@ def prefix_for(name: str) -> str:
     return candidate
 
 
-def _taken(session: Session) -> set[str]:
-    """Every key already in use, upper-cased.
+def _taken_company_keys(session: Session) -> set[str]:
+    """Every company key in use, upper-cased.
 
-    Archived clients are INCLUDED on purpose. A soft-deleted client can be
+    Archived companies are INCLUDED on purpose. A soft-deleted company can be
     restored, and restoring it must not collide with a key handed out while it
     sat in Trash.
     """
-    return {
-        (k or "").upper()
-        for k in session.exec(select(Account.key)).all()
-    }
+    return {(k or "").upper() for k in session.exec(select(Company.key)).all()}
 
 
-def next_key(session: Session, name: str, extra_taken: Optional[Iterable[str]] = None) -> str:
+def next_company_key(
+    session: Session, name: str, extra_taken: Optional[Iterable[str]] = None
+) -> str:
     """First free `PREFIX-NN` for this name. Upper-cased, zero-padded to two."""
-    taken = _taken(session)
+    taken = _taken_company_keys(session)
     if extra_taken:
         taken |= {k.upper() for k in extra_taken}
 
@@ -87,3 +86,24 @@ def next_key(session: Session, name: str, extra_taken: Optional[Iterable[str]] =
         n += 1
         if n > 9999:  # pragma: no cover - a book this size is not a real case
             raise RuntimeError(f"no free key for prefix {prefix}")
+
+
+def next_deal_key(session: Session, company: Company) -> str:
+    """`{company.key}-NN`, sequential within the company.
+
+    Derived from the highest suffix already issued rather than from a count, so
+    deleting the middle deal of three does not hand the next one a key that is
+    already on someone's calendar invite. Deals in every outcome and every
+    archive state are counted, for the same reason.
+
+    The trailing number IS reusable after a hard delete of the highest deal —
+    the same tradeoff company keys already make, and hard delete is the one
+    operation that requires typing the key back precisely because it is final.
+    """
+    prefix = company.key.upper()
+    highest = 0
+    for key in session.exec(select(Deal.key).where(Deal.company_id == company.id)).all():
+        suffix = (key or "").upper().removeprefix(prefix + "-")
+        if suffix.isdigit():
+            highest = max(highest, int(suffix))
+    return f"{prefix}-{highest + 1:02d}"

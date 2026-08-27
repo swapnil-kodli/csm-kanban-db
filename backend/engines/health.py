@@ -20,14 +20,14 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
-from models import Account, HealthSnapshot, Risk, UsageMetric
+from models import Deal, HealthSnapshot, Risk, UsageMetric
 
 WEIGHTS = {"usage": 0.40, "engagement": 0.25, "support": 0.20, "sentiment": 0.15}
 DEFAULT_SENTIMENT = 70
 
-# Thresholds relative to the account, on two axes.
+# Thresholds relative to the deal, on two axes.
 #
-# MAGNITUDE thresholds key on `size_band`, derived from where the account's
+# MAGNITUDE thresholds key on `size_band`, derived from where the deal's
 # quoted_total falls in the book. That is the original intent: a 15% usage drop
 # means something different on a small deal than on a large one. It is not about
 # pilot status, which says nothing about deal size.
@@ -57,23 +57,27 @@ MODE_THRESHOLDS: dict[str, dict[str, float]] = {
 
 SIZE_BANDS = ("small", "mid", "large")
 
-# Below this many active clients, quantiles stop describing anything. With three
-# clients one of them is always "large" and another always "small", purely by
+# Below this many active DEALS, quantiles stop describing anything. With three
+# deals one of them is always "large" and another always "small", purely by
 # position — so the band would be an artefact of the count, not of the deal.
-# Under the floor every account takes the neutral middle band, which is
+# Under the floor every deal takes the neutral middle band, which is
 # null-is-neutral again: the rule degrades to off rather than to wrong.
-MIN_CLIENTS_FOR_QUANTILES = 8
+#
+# Counted in deals rather than companies since the split, which is the correct
+# unit: a company running three 3L engagements should not band like one 9L
+# client. It also means the floor clears sooner, so the fallback engages less.
+MIN_DEALS_FOR_QUANTILES = 8
 DEFAULT_SIZE_BAND = "mid"
 
 
 def size_band_for(quoted_total: int, ladder: list[int]) -> str:
-    """Which third of the book's quoted values this account sits in.
+    """Which third of the book's quoted values this deal sits in.
 
     Quantiles, not fixed rupee cuts, so the bands stay meaningful as the book
     grows — but only once the book is large enough for thirds to mean anything.
     """
     ordered = sorted(v for v in ladder if v > 0)
-    if len(ordered) < MIN_CLIENTS_FOR_QUANTILES or quoted_total <= 0:
+    if len(ordered) < MIN_DEALS_FOR_QUANTILES or quoted_total <= 0:
         return DEFAULT_SIZE_BAND
     lower = ordered[len(ordered) // 3]
     upper = ordered[2 * len(ordered) // 3]
@@ -85,7 +89,7 @@ def size_band_for(quoted_total: int, ladder: list[int]) -> str:
 
 
 def thresholds(size_band: str, mode: str) -> dict:
-    """Merged view of both axes for one account."""
+    """Merged view of both axes for one deal."""
     merged = dict(SIZE_THRESHOLDS.get(size_band, SIZE_THRESHOLDS["mid"]))
     merged.update(MODE_THRESHOLDS.get(mode, MODE_THRESHOLDS["customer"]))
     return merged
@@ -116,22 +120,22 @@ BAND_LABELS = {
 # --- components --------------------------------------------------------------
 
 def usage_component(
-    session: Session, account: Account, on_day: Optional[date] = None
+    session: Session, deal: Deal, on_day: Optional[date] = None
 ) -> int:
     """14-day average active users over entitled seats, normalised to 0-100."""
     on_day = on_day or date.today()
     window_start = on_day - timedelta(days=13)
     rows = session.exec(
         select(UsageMetric).where(
-            UsageMetric.account_id == account.id,
+            UsageMetric.deal_id == deal.id,
             UsageMetric.captured_on >= window_start,
             UsageMetric.captured_on <= on_day,
         )
     ).all()
-    if not rows or not account.entitled_seats:
+    if not rows or not deal.entitled_seats:
         return DEFAULT_SENTIMENT
     avg_active = sum(r.active_users for r in rows) / len(rows)
-    return int(round(_clamp(avg_active / account.entitled_seats * 100)))
+    return int(round(_clamp(avg_active / deal.entitled_seats * 100)))
 
 
 # Recency curve. `last_contact_at` is hand-maintained, so engagement is recency
@@ -147,32 +151,32 @@ NEUTRAL_ENGAGEMENT = 70
 
 
 def engagement_component(
-    session: Session, account: Account, on_day: Optional[date] = None
+    session: Session, deal: Deal, on_day: Optional[date] = None
 ) -> int:
     """Recency of the last recorded contact, and nothing else.
 
     Unset is unknown, not neglected: it scores NEUTRAL_ENGAGEMENT rather than 0.
-    An account nobody has filled in must not read as an account nobody has
+    A deal nobody has filled in must not read as a deal nobody has
     called. See the standing principle in engines/__init__.py.
     """
-    if account.last_contact_at is None:
+    if deal.last_contact_at is None:
         return NEUTRAL_ENGAGEMENT
 
     on_day = on_day or date.today()
     # Aware, because last_contact_at comes back aware from Postgres and naive
     # from a pre-v5 SQLite row; days_between normalises both sides.
     horizon = datetime.combine(on_day, datetime.max.time(), tzinfo=timezone.utc)
-    elapsed = max(0, days_between(horizon, account.last_contact_at) or 0)
+    elapsed = max(0, days_between(horizon, deal.last_contact_at) or 0)
 
     # A pilot is given a shorter grace period than an established customer.
-    grace = MODE_THRESHOLDS.get(account.mode, MODE_THRESHOLDS["customer"])["neglect_days"] // 2
+    grace = MODE_THRESHOLDS.get(deal.mode, MODE_THRESHOLDS["customer"])["neglect_days"] // 2
     return int(round(_clamp(RECENCY_CEIL - max(0, elapsed - grace) * RECENCY_SLOPE)))
 
 
-def support_component(session: Session, account: Account) -> int:
+def support_component(session: Session, deal: Deal) -> int:
     """100 minus a penalty for open risks, weighted by severity."""
     risks = session.exec(
-        select(Risk).where(Risk.account_id == account.id, Risk.status == "open")
+        select(Risk).where(Risk.deal_id == deal.id, Risk.status == "open")
     ).all()
     penalty = 0
     for r in risks:
@@ -183,11 +187,11 @@ def support_component(session: Session, account: Account) -> int:
     return int(round(_clamp(100 - penalty)))
 
 
-def sentiment_component(account: Account) -> int:
+def sentiment_component(deal: Deal) -> int:
     """NPS (-100..100) mapped to 0-100; 70 when unknown."""
-    if account.last_nps is None:
+    if deal.last_nps is None:
         return DEFAULT_SENTIMENT
-    return int(round(_clamp((account.last_nps + 100) / 2)))
+    return int(round(_clamp((deal.last_nps + 100) / 2)))
 
 
 def compose(usage: int, engagement: int, support: int, sentiment: int) -> int:
@@ -213,11 +217,11 @@ def solve_usage_for(target: int, engagement: int, support: int, sentiment: int) 
 
 # --- snapshot + recompute ----------------------------------------------------
 
-def compute_components(session: Session, account: Account) -> dict:
-    usage = usage_component(session, account)
-    engagement = engagement_component(session, account)
-    support = support_component(session, account)
-    sentiment = sentiment_component(account)
+def compute_components(session: Session, deal: Deal) -> dict:
+    usage = usage_component(session, deal)
+    engagement = engagement_component(session, deal)
+    support = support_component(session, deal)
+    sentiment = sentiment_component(deal)
     return {
         "usage": usage,
         "engagement": engagement,
@@ -227,24 +231,24 @@ def compute_components(session: Session, account: Account) -> dict:
     }
 
 
-def recompute_account(session: Session, account: Account, commit: bool = True) -> Account:
-    """Recompute cached health for one account and upsert today's snapshot."""
+def recompute_deal(session: Session, deal: Deal, commit: bool = True) -> Deal:
+    """Recompute cached health for one deal and upsert today's snapshot."""
     # last_contact_at is hand-maintained in the drawer now; the engine reads it
     # and never overwrites it.
-    parts = compute_components(session, account)
-    account.health_score = parts["score"]
-    account.health_band = band_for(parts["score"])
-    account.updated_at = utcnow()
+    parts = compute_components(session, deal)
+    deal.health_score = parts["score"]
+    deal.health_band = band_for(parts["score"])
+    deal.updated_at = utcnow()
 
     today = date.today()
     snap = session.exec(
         select(HealthSnapshot).where(
-            HealthSnapshot.account_id == account.id,
+            HealthSnapshot.deal_id == deal.id,
             HealthSnapshot.captured_on == today,
         )
     ).first()
     if snap is None:
-        snap = HealthSnapshot(account_id=account.id, captured_on=today, **parts)
+        snap = HealthSnapshot(deal_id=deal.id, captured_on=today, **parts)
         session.add(snap)
     else:
         snap.score = parts["score"]
@@ -255,31 +259,34 @@ def recompute_account(session: Session, account: Account, commit: bool = True) -
         snap.updated_at = utcnow()
         session.add(snap)
 
-    session.add(account)
+    session.add(deal)
     if commit:
         session.commit()
-        session.refresh(account)
-    return account
+        session.refresh(deal)
+    return deal
 
 
 def recompute_all(session: Session) -> int:
-    accounts = session.exec(
-        select(Account).where(Account.archived_at == None)  # noqa: E711
+    deals = session.exec(
+        select(Deal).where(
+            Deal.archived_at == None,  # noqa: E711
+            Deal.outcome == "active",
+        )
     ).all()
-    for a in accounts:
-        recompute_account(session, a, commit=False)
+    for d in deals:
+        recompute_deal(session, d, commit=False)
     session.commit()
-    return len(accounts)
+    return len(deals)
 
 
-def velocity(session: Session, account_id: str, days: int = 30) -> Optional[int]:
+def velocity(session: Session, deal_id: str, days: int = 30) -> Optional[int]:
     """score_today - score_{days}d_ago. None when there is no history to compare."""
     today = date.today()
     then = today - timedelta(days=days)
     now_snap = session.exec(
         select(HealthSnapshot)
         .where(
-            HealthSnapshot.account_id == account_id,
+            HealthSnapshot.deal_id == deal_id,
             HealthSnapshot.captured_on <= today,
         )
         .order_by(HealthSnapshot.captured_on.desc())  # type: ignore[attr-defined]
@@ -288,7 +295,7 @@ def velocity(session: Session, account_id: str, days: int = 30) -> Optional[int]
     then_snap = session.exec(
         select(HealthSnapshot)
         .where(
-            HealthSnapshot.account_id == account_id,
+            HealthSnapshot.deal_id == deal_id,
             HealthSnapshot.captured_on <= then,
         )
         .order_by(HealthSnapshot.captured_on.desc())  # type: ignore[attr-defined]
@@ -299,12 +306,12 @@ def velocity(session: Session, account_id: str, days: int = 30) -> Optional[int]
     return now_snap.score - then_snap.score
 
 
-def effective_band(account: Account) -> str:
+def effective_band(deal: Deal) -> str:
     """Manual override wins over the computed band everywhere in the UI."""
-    return account.health_manual_override or account.health_band
+    return deal.health_manual_override or deal.health_band
 
 
-def override_age_days(account: Account) -> Optional[int]:
-    if not account.health_override_at:
+def override_age_days(deal: Deal) -> Optional[int]:
+    if not deal.health_override_at:
         return None
-    return days_since(account.health_override_at)
+    return days_since(deal.health_override_at)

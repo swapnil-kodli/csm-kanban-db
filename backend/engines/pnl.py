@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from models import Account
+from models import Deal
 
 # margin_pct colour ramp, reusing the health tokens so the board keeps one
 # saturated channel per meaning.
@@ -17,8 +17,8 @@ MARGIN_GREEN = 40
 MARGIN_AMBER = 20
 
 
-def total_cost(account: Account) -> int:
-    items = account.cost_items or []
+def total_cost(deal: Deal) -> int:
+    items = deal.cost_items or []
     total = 0
     for item in items:
         if isinstance(item, dict):
@@ -29,10 +29,10 @@ def total_cost(account: Account) -> int:
     return total
 
 
-def quoted_total_from_items(account: Account) -> int:
+def quoted_total_from_items(deal: Deal) -> int:
     """Sum of qty x rate. The client never sets quoted_total directly."""
     total = 0
-    for item in account.quoted_line_items or []:
+    for item in deal.quoted_line_items or []:
         if isinstance(item, dict):
             try:
                 total += int(item.get("qty") or 0) * int(item.get("rate") or 0)
@@ -52,9 +52,9 @@ def margin_band(margin_pct: Optional[float]) -> str:
     return "h-critical"
 
 
-def compute(account: Account) -> dict:
-    cost = total_cost(account)
-    revenue = int(account.revenue_recognised or 0)
+def compute(deal: Deal) -> dict:
+    cost = total_cost(deal)
+    revenue = int(deal.revenue_recognised or 0)
     gross_margin = revenue - cost
 
     # Divide-by-zero guard: nothing billed yet is not "100% margin", it is
@@ -63,14 +63,14 @@ def compute(account: Account) -> dict:
     if revenue > 0:
         margin_pct = round(gross_margin / revenue * 100, 1)
 
-    quoted = int(account.quoted_total or 0)
+    quoted = int(deal.quoted_total or 0)
     return {
         "quoted_total": quoted,
-        "quoted_at": account.quoted_at.isoformat() if account.quoted_at else None,
-        "quote_notes": account.quote_notes,
-        "quoted_line_items": account.quoted_line_items or [],
+        "quoted_at": deal.quoted_at.isoformat() if deal.quoted_at else None,
+        "quote_notes": deal.quote_notes,
+        "quoted_line_items": deal.quoted_line_items or [],
         "revenue_recognised": revenue,
-        "cost_items": account.cost_items or [],
+        "cost_items": deal.cost_items or [],
         "total_cost": cost,
         "gross_margin": gross_margin,
         "margin_pct": margin_pct,
@@ -81,9 +81,9 @@ def compute(account: Account) -> dict:
     }
 
 
-def is_underwater(account: Account) -> bool:
+def is_underwater(deal: Deal) -> bool:
     """Negative margin, or thin enough to be worth a critical alert."""
-    parts = compute(account)
+    parts = compute(deal)
     if parts["margin_pct"] is None:
         return False
     return parts["gross_margin"] < 0 or parts["margin_pct"] < MARGIN_AMBER

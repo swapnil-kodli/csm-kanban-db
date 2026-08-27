@@ -90,8 +90,59 @@ class User(Stamped, table=True):
     avatar_color: str = "#111111"
 
 
-class Account(Stamped, table=True):
-    key: str = Field(index=True, unique=True)          # Jira-style, e.g. SBP-01
+class Company(Stamped, table=True):
+    """The client organisation. Owns the relationship, never sits on the board.
+
+    Everything here describes WHO the client is. Everything describing what is
+    being delivered for them lives on Deal, because one company can have several
+    engagements running at once — and one of them going badly is not a fact
+    about the company's address or its account owner.
+    """
+
+    key: str = Field(index=True, unique=True)          # PRE-04, immutable
+    name: str = Field(index=True)
+    client_type: str = Field(default="voice_ai_only")  # voice_ai_only | data_plus_voice_ai
+    city: Optional[str] = None
+    owner_id: str = Field(foreign_key="app_user.id", index=True)
+    tags: list = Field(default_factory=list, sa_type=JSONColumn)
+
+    # Soft delete. A company owns contacts and deals, and each deal owns tasks,
+    # snapshots, costing and PNL history — with no seed to restore from a hard
+    # delete is unrecoverable, so it happens only from Trash, on purpose.
+    archived_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
+
+
+# A deal is either being worked, finished, or dead. `outcome` is business truth
+# and feeds the won/lost history on the company view; it is deliberately NOT the
+# same axis as `column_id`, because a deal can be lost from any column.
+DEAL_OUTCOMES = ("active", "completed", "lost")
+
+
+class Deal(Stamped, table=True):
+    """One engagement. THIS is the board card.
+
+    Two independent axes, same as before the split:
+      column_id   where the engagement sits in the delivery pipeline (drag-drop)
+      workstream  what the team is actively doing on it right now (drawer only)
+
+    And now a third that is neither: `outcome`. Only `active` deals appear on
+    the board. `completed` and `lost` drop off but stay queryable, which is what
+    makes "how many won, how many lost" answerable per company.
+    """
+
+    key: str = Field(index=True, unique=True)          # PRE-04-01, per company
+    company_id: str = Field(foreign_key="company.id", index=True)
+
+    # Mandatory. The Gmail panel keys off this contact's email, and a deal
+    # without a named counterpart is not an engagement anyone can work.
+    # API-enforced invariant: this contact's company_id MUST equal company_id
+    # above. A cross-company POC would leak one client's contact — and their
+    # correspondence — onto another client's drawer.
+    poc_id: str = Field(foreign_key="contact.id", index=True)
+
+    # Its own name, not the company's. Seeded from the company name at
+    # migration. Without it, two deals for one company render as identical
+    # cards distinguishable only by decoding the key suffix.
     name: str = Field(index=True)
 
     # --- the two axes ------------------------------------------------------
@@ -100,27 +151,23 @@ class Account(Stamped, table=True):
     # drives `column_stalled`
     column_changed_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
 
-    # --- commercial shape --------------------------------------------------
     mode: str = Field(default="pilot", index=True)      # pilot | customer
-    client_type: str = Field(default="voice_ai_only")   # voice_ai_only | data_plus_voice_ai
-
-    city: Optional[str] = None
-    owner_id: str = Field(foreign_key="app_user.id", index=True)
 
     # --- health engine outputs (cached) ------------------------------------
+    # Health lives here, not on Company. A client with one engagement going well
+    # and another failing has no single meaningful score — averaging them hides
+    # exactly the deal you need to look at. The company view rolls these up by
+    # taking the WORST active band, never a mean.
     health_score: int = 70
     health_band: str = "watch"
     health_manual_override: Optional[str] = None
     health_override_reason: Optional[str] = None
     health_override_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
-    health_note: Optional[str] = None                   # free text, set during a check
+    health_note: Optional[str] = None
 
     # --- health engine inputs ----------------------------------------------
     entitled_seats: int = 20
     last_nps: Optional[int] = None
-
-    # POCs live in `contact`, one of which carries is_primary. The three flat
-    # poc_* fields were folded into that table in the v4 migration.
     comm_modes: list = Field(default_factory=list, sa_type=JSONColumn)
 
     # --- costing: what was quoted -----------------------------------------
@@ -135,24 +182,37 @@ class Account(Stamped, table=True):
     revenue_recognised: int = 0
     cost_items: list = Field(default_factory=list, sa_type=JSONColumn)
 
-    tags: list = Field(default_factory=list, sa_type=JSONColumn)
     handoff_received_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
     last_contact_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
     attention_score: float = 0.0
     pinned: bool = False
 
-    # Soft delete. A client owns contacts, tasks, snapshots, costing and PNL
-    # history, and with no seed to restore from a hard delete is unrecoverable.
-    # Set here, the row leaves every board, engine and metric but stays intact
-    # in Trash until someone hard-deletes it on purpose.
+    # --- outcome -----------------------------------------------------------
+    outcome: str = Field(default="active", index=True)
+    outcome_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
+    outcome_reason: Optional[str] = None
+
+    # Distinct from outcome="lost" on purpose. `lost` is a real result and
+    # belongs in the won/lost counts; `archived_at` means the record should not
+    # exist. Folding the second into the first would corrupt the exact number
+    # this split was made to produce.
     archived_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
 
 
 class Contact(Stamped, table=True):
-    account_id: str = Field(foreign_key="account.id", index=True)
+    """Belongs to a Company, and is reusable across all of that company's deals.
+
+    Contacts are company-scoped rather than deal-scoped because the same person
+    is the counterpart on every engagement you run with that client — making
+    them re-enter the POC per deal would guarantee three spellings of one email.
+    """
+
+    company_id: str = Field(foreign_key="company.id", index=True)
     name: str
     role: str
-    # Exactly one primary per account. The Gmail panel keys off its email.
+    # Exactly one primary per company: the default POC offered when a new deal
+    # is created. A deal's actual POC is deal.poc_id and can be anyone else on
+    # this company.
     is_primary: bool = False
     email: Optional[str] = None
     phone: Optional[str] = None
@@ -163,7 +223,7 @@ class Contact(Stamped, table=True):
 
 
 class Task(Stamped, table=True):
-    account_id: str = Field(foreign_key="account.id", index=True)
+    deal_id: str = Field(foreign_key="deal.id", index=True)
     title: str
     type: str = "admin"
     bucket: str = Field(default="today", index=True)
@@ -178,7 +238,7 @@ class Task(Stamped, table=True):
 
 
 class Activity(Stamped, table=True):
-    account_id: str = Field(foreign_key="account.id", index=True)
+    deal_id: str = Field(foreign_key="deal.id", index=True)
     contact_id: Optional[str] = Field(default=None, foreign_key="contact.id")
     type: str
     occurred_at: datetime = Field(sa_type=TZDateTime, index=True)
@@ -188,7 +248,7 @@ class Activity(Stamped, table=True):
 
 
 class HealthSnapshot(Stamped, table=True):
-    account_id: str = Field(foreign_key="account.id", index=True)
+    deal_id: str = Field(foreign_key="deal.id", index=True)
     captured_on: date = Field(index=True)
     score: int
     usage: int
@@ -198,7 +258,7 @@ class HealthSnapshot(Stamped, table=True):
 
 
 class Risk(Stamped, table=True):
-    account_id: str = Field(foreign_key="account.id", index=True)
+    deal_id: str = Field(foreign_key="deal.id", index=True)
     type: str
     severity: str = "medium"
     status: str = Field(default="open", index=True)
@@ -207,7 +267,7 @@ class Risk(Stamped, table=True):
 
 
 class UsageMetric(Stamped, table=True):
-    account_id: str = Field(foreign_key="account.id", index=True)
+    deal_id: str = Field(foreign_key="deal.id", index=True)
     captured_on: date = Field(index=True)
     active_users: int = 0
     sessions: int = 0

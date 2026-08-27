@@ -21,7 +21,7 @@ from sqlmodel import Session, select
 
 from db import get_session
 from dbtypes import utcnow
-from models import Account, BoardColumn, COLUMN_PALETTE
+from models import BoardColumn, COLUMN_PALETTE, Deal
 from schemas import ColumnCreate, ColumnDelete, ColumnPatch, ColumnReorder
 
 router = APIRouter(prefix="/columns", tags=["columns"])
@@ -55,7 +55,10 @@ def _counts(session: Session) -> dict[str, int]:
     # Archived clients do not count against a column, so they never block a
     # delete or an archive.
     for a in session.exec(
-        select(Account).where(Account.archived_at == None)  # noqa: E711
+        select(Deal).where(
+            Deal.archived_at == None,  # noqa: E711
+            Deal.outcome == "active",
+        )
     ).all():
         out[a.column_id] = out.get(a.column_id, 0) + 1
     return out
@@ -288,16 +291,17 @@ def delete_column(
         target = session.get(BoardColumn, payload.reassign_to or "")
         if target is None or target.id == column.id:
             raise HTTPException(status_code=422, detail="Pick a different target column")
-        for account in session.exec(
-            select(Account).where(
-                Account.column_id == column.id,
-                Account.archived_at == None,  # noqa: E711
+        for deal in session.exec(
+            select(Deal).where(
+                Deal.column_id == column.id,
+                Deal.archived_at == None,  # noqa: E711
+                Deal.outcome == "active",
             )
         ).all():
-            account.column_id = target.id
-            account.column_changed_at = utcnow()
-            account.updated_at = utcnow()
-            session.add(account)
+            deal.column_id = target.id
+            deal.column_changed_at = utcnow()
+            deal.updated_at = utcnow()
+            session.add(deal)
 
     session.delete(column)
     session.commit()

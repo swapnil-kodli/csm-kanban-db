@@ -9,15 +9,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session, select
 
 from db import engine, get_session, init_db
-from models import Account, User
+from models import User
 from engines import alerts as alert_engine
 from engines import health as health_engine
 from engines.attention import refresh_cached_scores
 from routers import (
-    accounts,
     columns,
+    companies,
     board,
     contacts,
+    deals,
     google,
     metrics,
     search,
@@ -108,7 +109,8 @@ def recompute(session: Session = Depends(get_session)):
 
 api.include_router(board.router)
 api.include_router(columns.router)
-api.include_router(accounts.router)
+api.include_router(companies.router)
+api.include_router(deals.router)
 api.include_router(tasks.router)
 api.include_router(contacts.router)
 api.include_router(search.router)

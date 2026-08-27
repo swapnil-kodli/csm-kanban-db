@@ -13,7 +13,7 @@
 so both terms lost their inputs entirely.
 
 Kept transparent on purpose: `terms` travels with the score so the drawer can
-show its working. A pinned account always sorts first — human judgement
+show its working. A pinned deal always sorts first — human judgement
 outranks the formula, always.
 """
 from __future__ import annotations
@@ -25,13 +25,13 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
-from models import Account, BoardColumn, Risk, Task
+from models import BoardColumn, Company, Contact, Deal, Risk, Task
 from engines import health as health_engine
 from engines import pnl as pnl_engine
 
 BAND_WEIGHTS = {"critical": 40, "at_risk": 28, "watch": 12, "healthy": 0}
 
-# An account is listed in Needs Attention at or above this score. Chosen so the
+# A deal is listed in Needs Attention at or above this score. Chosen so the
 # queue stays a short list a CSM can actually work, not a second copy of the board.
 ATTENTION_THRESHOLD = 35.0
 
@@ -40,20 +40,39 @@ STALLED_COLUMN_DAYS = 14
 
 
 class BookContext:
-    """Per-request cache of the whole book, so scoring N accounts stays one pass."""
+    """Per-request cache of the whole book, so scoring N deals stays one pass."""
 
     def __init__(self, session: Session):
         self.session = session
-        # Archived clients leave the board and stay out of every metric and
-        # engine. One exclusion here covers the whole scoring surface.
-        self.accounts = session.exec(
-            select(Account).where(Account.archived_at == None)  # noqa: E711
+        # Only ACTIVE deals are scored. A completed or lost deal has no
+        # attention to pay, and leaving them in would skew the quote quartiles
+        # with engagements nobody is working.
+        self.deals = session.exec(
+            select(Deal).where(
+                Deal.archived_at == None,  # noqa: E711
+                Deal.outcome == "active",
+            )
         ).all()
+        # Trash count, for the board's empty state. Archived only — a lost
+        # deal is a result, not a deleted record, and does not belong in Trash.
         self.archived_count = len(
             session.exec(
-                select(Account).where(Account.archived_at != None)  # noqa: E711
+                select(Deal).where(Deal.archived_at != None)  # noqa: E711
             ).all()
         )
+        # Every company touched by an active deal, so the metrics strip can say
+        # "N deals across K companies" without a second pass.
+        self.company_ids = {d.company_id for d in self.deals}
+
+        # Companies and contacts are loaded whole rather than per-deal: the
+        # board renders every card's company chip and the search filter reads
+        # every deal's POC, so a lazy lookup would be N+1 queries per request.
+        self.company_by_id: dict[str, Company] = {
+            c.id: c for c in session.exec(select(Company)).all()
+        }
+        self.contact_by_id: dict[str, Contact] = {
+            c.id: c for c in session.exec(select(Contact)).all()
+        }
 
         # Column config is read once per request. Behaviour that v2 hardcoded to
         # literal column keys now comes from these rows.
@@ -64,44 +83,44 @@ class BookContext:
         self.entry_column: Optional[BoardColumn] = next(
             (c for c in self.columns if c.is_default_entry), None
         )
-        self.quote_ladder = sorted(a.quoted_total for a in self.accounts) or [0]
-        self.pnl_by_account: dict[str, dict] = {
-            a.id: pnl_engine.compute(a) for a in self.accounts
+        self.quote_ladder = sorted(a.quoted_total for a in self.deals) or [0]
+        self.pnl_by_deal: dict[str, dict] = {
+            a.id: pnl_engine.compute(a) for a in self.deals
         }
-        self.size_band_by_account: dict[str, str] = {
+        self.size_band_by_deal: dict[str, str] = {
             a.id: health_engine.size_band_for(a.quoted_total, self.quote_ladder)
-            for a in self.accounts
+            for a in self.deals
         }
 
         self.open_high_risks: dict[str, int] = {}
         for r in session.exec(select(Risk).where(Risk.status == "open")).all():
             if r.severity == "high":
-                self.open_high_risks[r.account_id] = (
-                    self.open_high_risks.get(r.account_id, 0) + 1
+                self.open_high_risks[r.deal_id] = (
+                    self.open_high_risks.get(r.deal_id, 0) + 1
                 )
 
         self.open_escalations: dict[str, int] = {}
         for r in session.exec(
             select(Risk).where(Risk.status == "open", Risk.type == "escalation")
         ).all():
-            self.open_escalations[r.account_id] = (
-                self.open_escalations.get(r.account_id, 0) + 1
+            self.open_escalations[r.deal_id] = (
+                self.open_escalations.get(r.deal_id, 0) + 1
             )
 
         today = date.today()
-        self.overdue_by_account: dict[str, int] = {}
-        self.open_tasks_by_account: dict[str, int] = {}
+        self.overdue_by_deal: dict[str, int] = {}
+        self.open_tasks_by_deal: dict[str, int] = {}
         for t in session.exec(select(Task).where(Task.status == "open")).all():
-            self.open_tasks_by_account[t.account_id] = (
-                self.open_tasks_by_account.get(t.account_id, 0) + 1
+            self.open_tasks_by_deal[t.deal_id] = (
+                self.open_tasks_by_deal.get(t.deal_id, 0) + 1
             )
             if t.due_date < today:
-                self.overdue_by_account[t.account_id] = (
-                    self.overdue_by_account.get(t.account_id, 0) + 1
+                self.overdue_by_deal[t.deal_id] = (
+                    self.overdue_by_deal.get(t.deal_id, 0) + 1
                 )
 
-        self.velocity_by_account: dict[str, Optional[int]] = {
-            a.id: health_engine.velocity(session, a.id) for a in self.accounts
+        self.velocity_by_deal: dict[str, Optional[int]] = {
+            a.id: health_engine.velocity(session, a.id) for a in self.deals
         }
 
     def top_quartile_quote(self) -> Optional[int]:
@@ -113,44 +132,44 @@ class BookContext:
         "skip this rule" — off, not wrong.
         """
         ladder = [v for v in self.quote_ladder if v > 0]
-        if len(ladder) < health_engine.MIN_CLIENTS_FOR_QUANTILES:
+        if len(ladder) < health_engine.MIN_DEALS_FOR_QUANTILES:
             return None
         idx = int(round(0.75 * (len(ladder) - 1)))
         return ladder[idx]
 
-    def days_in_column(self, account: Account) -> Optional[int]:
-        if not account.column_changed_at:
+    def days_in_column(self, deal: Deal) -> Optional[int]:
+        if not deal.column_changed_at:
             return None
-        return days_since(account.column_changed_at)
+        return days_since(deal.column_changed_at)
 
-    def column_of(self, account: Account) -> Optional[BoardColumn]:
-        return self.column_by_id.get(account.column_id)
+    def column_of(self, deal: Deal) -> Optional[BoardColumn]:
+        return self.column_by_id.get(deal.column_id)
 
-    def is_stalled(self, account: Account) -> bool:
+    def is_stalled(self, deal: Deal) -> bool:
         """A column with no stalled_after_days does not track stalling at all.
 
         That NULL is how a terminal column opts out — it replaces v2's hardcoded
         "never stall in Launch" check, with one mechanism rather than two.
         """
-        column = self.column_of(account)
+        column = self.column_of(deal)
         if column is None or column.stalled_after_days is None:
             return False
-        days = self.days_in_column(account)
+        days = self.days_in_column(deal)
         return days is not None and days > column.stalled_after_days
 
 
-def score_account(ctx: BookContext, account: Account) -> dict:
-    delta = ctx.velocity_by_account.get(account.id)
-    parts = ctx.pnl_by_account.get(account.id) or pnl_engine.compute(account)
+def score_deal(ctx: BookContext, deal: Deal) -> dict:
+    delta = ctx.velocity_by_deal.get(deal.id)
+    parts = ctx.pnl_by_deal.get(deal.id) or pnl_engine.compute(deal)
     margin_pct = parts["margin_pct"]
 
-    days_since_contact = days_since(account.last_contact_at)
+    days_since_contact = days_since(deal.last_contact_at)
     neglect_window = health_engine.MODE_THRESHOLDS.get(
-        account.mode, health_engine.MODE_THRESHOLDS["customer"]
+        deal.mode, health_engine.MODE_THRESHOLDS["customer"]
     )["neglect_days"]
 
-    band = health_engine.effective_band(account)
-    days_in_column = ctx.days_in_column(account)
+    band = health_engine.effective_band(deal)
+    days_in_column = ctx.days_in_column(deal)
 
     band_w = float(BAND_WEIGHTS.get(band, 0))
     velocity_w = float(min(20, max(0, -(delta or 0))))
@@ -159,14 +178,14 @@ def score_account(ctx: BookContext, account: Account) -> dict:
     # signal. Only a known-thin or negative margin scores.
     margin_w = 15.0 if margin_pct is not None and margin_pct < pnl_engine.MARGIN_AMBER else 0.0
 
-    stalled_w = 10.0 if ctx.is_stalled(account) else 0.0
-    escalation_w = float(min(20, 12 * ctx.open_high_risks.get(account.id, 0)))
+    stalled_w = 10.0 if ctx.is_stalled(deal) else 0.0
+    escalation_w = float(min(20, 12 * ctx.open_high_risks.get(deal.id, 0)))
     neglect_w = (
         round(min((days_since_contact - neglect_window) / 2, 10), 1)
         if days_since_contact is not None and days_since_contact > neglect_window
         else 0.0
     )
-    overdue_w = float(min(12, 3 * ctx.overdue_by_account.get(account.id, 0)))
+    overdue_w = float(min(12, 3 * ctx.overdue_by_deal.get(deal.id, 0)))
 
     total = round(
         band_w + velocity_w + margin_w + stalled_w + escalation_w + neglect_w + overdue_w, 1
@@ -179,9 +198,9 @@ def score_account(ctx: BookContext, account: Account) -> dict:
             {"label": "Health velocity", "detail": _delta_text(delta), "value": velocity_w},
             {"label": "Margin risk", "detail": _margin_text(margin_pct), "value": margin_w},
             {"label": "Stalled in column", "detail": _column_text(days_in_column), "value": stalled_w},
-            {"label": "Open escalations", "detail": f"{ctx.open_high_risks.get(account.id, 0)} high-severity", "value": escalation_w},
+            {"label": "Open escalations", "detail": f"{ctx.open_high_risks.get(deal.id, 0)} high-severity", "value": escalation_w},
             {"label": "Neglect", "detail": _contact_text(days_since_contact), "value": neglect_w},
-            {"label": "Overdue tasks", "detail": f"{ctx.overdue_by_account.get(account.id, 0)} overdue", "value": overdue_w},
+            {"label": "Overdue tasks", "detail": f"{ctx.overdue_by_deal.get(deal.id, 0)} overdue", "value": overdue_w},
         ],
     }
 
@@ -214,11 +233,11 @@ def _contact_text(days: Optional[int]) -> str:
     return f"last contact {days}d ago"
 
 
-def needs_attention(ctx: BookContext) -> list[tuple[Account, dict]]:
-    """Active accounts at or above the threshold, worst first. Pinned always lead."""
+def needs_attention(ctx: BookContext) -> list[tuple[Deal, dict]]:
+    """Active deals at or above the threshold, worst first. Pinned always lead."""
     rows = []
-    for a in ctx.accounts:
-        scored = score_account(ctx, a)
+    for a in ctx.deals:
+        scored = score_deal(ctx, a)
         if a.pinned or scored["score"] >= ATTENTION_THRESHOLD:
             rows.append((a, scored))
     rows.sort(key=lambda r: (not r[0].pinned, -r[1]["score"], r[0].name))
@@ -227,7 +246,7 @@ def needs_attention(ctx: BookContext) -> list[tuple[Account, dict]]:
 
 def refresh_cached_scores(session: Session) -> None:
     ctx = BookContext(session)
-    for a in ctx.accounts:
-        a.attention_score = score_account(ctx, a)["score"]
+    for a in ctx.deals:
+        a.attention_score = score_deal(ctx, a)["score"]
         session.add(a)
     session.commit()

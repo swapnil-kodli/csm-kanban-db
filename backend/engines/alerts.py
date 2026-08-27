@@ -5,9 +5,9 @@ a task someone owns. Anything that fails that test changes board state instead.
 There is no bell icon and no unread count anywhere in this product.
 
 Idempotent by construction: never a second *open* task for the same
-(account_id, rule_key) pair.
+(deal_id, rule_key) pair.
 
-Thresholds are relative to the account on two axes (see engines/health.py):
+Thresholds are relative to the deal on two axes (see engines/health.py):
 magnitude keys on `size_band`, derived from quoted_total quantiles across the
 book, because a 15% usage drop means something different on a small deal than a
 large one; the no-contact window keys on `mode`, because a fragile pilot dies of
@@ -20,7 +20,7 @@ State-only signals:   no_contact · stalled_handoff · column_stalled
 `renewal_90/60/30` are gone with the renewal model. `milestone_overdue` is gone
 with the milestone table and is deliberately NOT replaced: `column_stalled` on
 the onboarding column already covers that visibility gap, and a second stall
-rule would double-fire on the same account.
+rule would double-fire on the same deal.
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from typing import Optional
 
 from sqlmodel import Session, select
 
-from models import Account, Contact, Risk, Task, UsageMetric, User
+from models import Contact, Deal, Risk, Task, UsageMetric, User
 from engines import health as health_engine
 from engines import pnl as pnl_engine
 from engines.attention import STALLED_COLUMN_DAYS, BookContext
@@ -41,10 +41,10 @@ IMPORTANT = "important"
 STATE = "state"
 
 
-def _open_rule_task(session: Session, account_id: str, rule_key: str) -> Optional[Task]:
+def _open_rule_task(session: Session, deal_id: str, rule_key: str) -> Optional[Task]:
     return session.exec(
         select(Task).where(
-            Task.account_id == account_id,
+            Task.deal_id == deal_id,
             Task.rule_key == rule_key,
             Task.status == "open",
         )
@@ -53,7 +53,7 @@ def _open_rule_task(session: Session, account_id: str, rule_key: str) -> Optiona
 
 def _emit(
     session: Session,
-    account: Account,
+    deal: Deal,
     owner_id: str,
     rule_key: str,
     title: str,
@@ -64,10 +64,10 @@ def _emit(
     due_in_days: int,
 ) -> Optional[Task]:
     """Create the owned task for a rule, unless one is already open."""
-    if _open_rule_task(session, account.id, rule_key):
+    if _open_rule_task(session, deal.id, rule_key):
         return None
     task = Task(
-        account_id=account.id,
+        deal_id=deal.id,
         title=title,
         type=task_type,
         bucket=bucket,
@@ -85,19 +85,19 @@ def _emit(
 
 # --- usage helper ------------------------------------------------------------
 
-def usage_decline_ratio(session: Session, account_id: str) -> Optional[float]:
+def usage_decline_ratio(session: Session, deal_id: str) -> Optional[float]:
     """14d active-user average over the prior 14d average."""
     today = date.today()
     recent = session.exec(
         select(UsageMetric).where(
-            UsageMetric.account_id == account_id,
+            UsageMetric.deal_id == deal_id,
             UsageMetric.captured_on > today - timedelta(days=14),
             UsageMetric.captured_on <= today,
         )
     ).all()
     prior = session.exec(
         select(UsageMetric).where(
-            UsageMetric.account_id == account_id,
+            UsageMetric.deal_id == deal_id,
             UsageMetric.captured_on > today - timedelta(days=28),
             UsageMetric.captured_on <= today - timedelta(days=14),
         )
@@ -113,18 +113,18 @@ def usage_decline_ratio(session: Session, account_id: str) -> Optional[float]:
 
 # --- board state (badges, never a push) --------------------------------------
 
-def state_flags(ctx: BookContext, account: Account) -> dict:
+def state_flags(ctx: BookContext, deal: Deal) -> dict:
     """Info-tier signals. These change board state; they never create a task."""
-    days_since_contact = days_since(account.last_contact_at)
-    size_band = ctx.size_band_by_account.get(account.id, "mid")
-    th = health_engine.thresholds(size_band, account.mode)
-    days_in_column = ctx.days_in_column(account)
-    column = ctx.column_of(account)
+    days_since_contact = days_since(deal.last_contact_at)
+    size_band = ctx.size_band_by_deal.get(deal.id, "mid")
+    th = health_engine.thresholds(size_band, deal.mode)
+    days_in_column = ctx.days_in_column(deal)
+    column = ctx.column_of(deal)
 
     # The column new work lands in IS the handoff inbox — one flag, not two
     # ideas. Stalling anywhere, including there, is one per-column threshold.
     is_entry = bool(column and column.is_default_entry)
-    stalled = ctx.is_stalled(account)
+    stalled = ctx.is_stalled(deal)
 
     return {
         "no_contact": days_since_contact is not None
@@ -148,29 +148,29 @@ def evaluate(session: Session) -> dict:
     ctx = BookContext(session)
     created: list[dict] = []
 
-    contacts_by_account: dict[str, list[Contact]] = {}
+    contacts_by_company: dict[str, list[Contact]] = {}
     for c in session.exec(select(Contact)).all():
-        contacts_by_account.setdefault(c.account_id, []).append(c)
+        contacts_by_company.setdefault(c.company_id, []).append(c)
 
-    escalations_by_account: dict[str, list[Risk]] = {}
+    escalations_by_deal: dict[str, list[Risk]] = {}
     for r in session.exec(
         select(Risk).where(Risk.status == "open", Risk.type == "escalation")
     ).all():
-        escalations_by_account.setdefault(r.account_id, []).append(r)
+        escalations_by_deal.setdefault(r.deal_id, []).append(r)
 
     top_quartile = ctx.top_quartile_quote()
 
-    for account in ctx.accounts:
-        size_band = ctx.size_band_by_account.get(account.id, "mid")
-        th = health_engine.thresholds(size_band, account.mode)
-        band = health_engine.effective_band(account)
-        delta = ctx.velocity_by_account.get(account.id)
+    for deal in ctx.deals:
+        size_band = ctx.size_band_by_deal.get(deal.id, "mid")
+        th = health_engine.thresholds(size_band, deal.mode)
+        band = health_engine.effective_band(deal)
+        delta = ctx.velocity_by_deal.get(deal.id)
 
         def emit(**kw):
-            t = _emit(session, account, owner.id, **kw)
+            t = _emit(session, deal, owner.id, **kw)
             if t is not None:
                 created.append(
-                    {"account": account.key, "rule_key": kw["rule_key"], "title": t.title}
+                    {"deal": deal.key, "rule_key": kw["rule_key"], "title": t.title}
                 )
 
         # --- critical -------------------------------------------------------
@@ -190,11 +190,11 @@ def evaluate(session: Session) -> dict:
         if (
             top_quartile is not None
             and band in ("at_risk", "critical")
-            and account.quoted_total >= top_quartile
+            and deal.quoted_total >= top_quartile
         ):
             emit(
                 rule_key="high_value_at_risk",
-                title=f"Run risk playbook — {account.name}",
+                title=f"Run risk playbook — {deal.name}",
                 provenance=(
                     f"Alert: top-quartile engagement moved to "
                     f"{health_engine.BAND_LABELS[band]}"
@@ -207,11 +207,11 @@ def evaluate(session: Session) -> dict:
 
         # A known-negative margin is a commercial emergency; a null margin
         # (nothing billed yet) is not, and must not fire.
-        margin = ctx.pnl_by_account.get(account.id, {}).get("margin_pct")
-        if margin is not None and pnl_engine.compute(account)["gross_margin"] < 0:
+        margin = ctx.pnl_by_deal.get(deal.id, {}).get("margin_pct")
+        if margin is not None and pnl_engine.compute(deal)["gross_margin"] < 0:
             emit(
                 rule_key="margin_negative",
-                title=f"Margin underwater — {account.name}",
+                title=f"Margin underwater — {deal.name}",
                 provenance=f"Alert: gross margin negative at {margin}%",
                 task_type="admin",
                 bucket="today",
@@ -221,7 +221,7 @@ def evaluate(session: Session) -> dict:
 
         departed_champions = [
             c
-            for c in contacts_by_account.get(account.id, [])
+            for c in contacts_by_company.get(deal.id, [])
             if c.is_champion and c.status == "departed"
         ]
         if departed_champions:
@@ -237,7 +237,7 @@ def evaluate(session: Session) -> dict:
             )
 
         # --- important ------------------------------------------------------
-        ratio = usage_decline_ratio(session, account.id)
+        ratio = usage_decline_ratio(session, deal.id)
         if ratio is not None and ratio <= th["usage_decline_ratio"]:
             emit(
                 rule_key="usage_decline",
@@ -249,7 +249,7 @@ def evaluate(session: Session) -> dict:
                 due_in_days=3,
             )
 
-        for esc in escalations_by_account.get(account.id, []):
+        for esc in escalations_by_deal.get(deal.id, []):
             emit(
                 rule_key="escalation_open",
                 title="Escalation follow-up with support",

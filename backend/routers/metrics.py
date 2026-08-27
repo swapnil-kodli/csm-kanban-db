@@ -2,6 +2,11 @@
 
 Still exactly five, still all clickable, still my-book counts. NRR / GRR /
 churn / CLV remain deliberately absent — that is the executive-dashboard trap.
+
+Every counter re-keyed to active DEALS in the split. Won/lost deliberately did
+NOT become a sixth tile: it is a per-company fact, and it is only useful next to
+which deals were won and lost, so it lives on the company view. Adding it here
+would be the executive dashboard arriving through the side door.
 """
 from __future__ import annotations
 
@@ -11,7 +16,7 @@ from sqlmodel import Session
 from db import get_session
 from engines import pnl as pnl_engine
 from engines.attention import BookContext, needs_attention
-from serializers import account_card
+from serializers import deal_card
 
 router = APIRouter(tags=["metrics"])
 
@@ -19,23 +24,24 @@ router = APIRouter(tags=["metrics"])
 @router.get("/metrics")
 def get_metrics(session: Session = Depends(get_session)):
     ctx = BookContext(session)
-    accounts = ctx.accounts
+    deals = ctx.deals
 
     attention_rows = needs_attention(ctx)
-    pilots = [a for a in accounts if a.mode == "pilot"]
-    customers = [a for a in accounts if a.mode == "customer"]
+    pilots = [d for d in deals if d.mode == "pilot"]
+    customers = [d for d in deals if d.mode == "customer"]
 
-    quoted = sum(a.quoted_total for a in accounts)
-    revenue = sum(int(a.revenue_recognised or 0) for a in accounts)
-    cost = sum(pnl_engine.total_cost(a) for a in accounts)
+    quoted = sum(d.quoted_total for d in deals)
+    revenue = sum(int(d.revenue_recognised or 0) for d in deals)
+    cost = sum(pnl_engine.total_cost(d) for d in deals)
     gross_margin = revenue - cost
     margin_pct = round(gross_margin / revenue * 100, 1) if revenue > 0 else None
 
     at_risk = [
-        a
-        for a in accounts
-        if (a.health_manual_override or a.health_band) in ("at_risk", "critical")
+        d
+        for d in deals
+        if (d.health_manual_override or d.health_band) in ("at_risk", "critical")
     ]
+    companies = len(ctx.company_ids)
 
     return {
         "metrics": [
@@ -50,9 +56,10 @@ def get_metrics(session: Session = Depends(get_session)):
             {
                 "key": "active_engagements",
                 "label": "Active Engagements",
-                "value": len(accounts),
+                "value": len(deals),
                 "format": "count",
-                "sub": f"{len(pilots)} pilots · {len(customers)} customers",
+                "sub": f"{len(pilots)} pilots · {len(customers)} customers"
+                       f" across {companies} {'client' if companies == 1 else 'clients'}",
                 "filters": {},
             },
             {
@@ -60,7 +67,7 @@ def get_metrics(session: Session = Depends(get_session)):
                 "label": "Quoted Value",
                 "value": quoted,
                 "format": "inr",
-                "sub": f"{len(accounts)} engagements",
+                "sub": f"{len(deals)} engagements",
                 "filters": {},
             },
             {
@@ -91,12 +98,12 @@ def get_attention(
     ctx = BookContext(session)
     rows = needs_attention(ctx)[:limit]
     return {
-        "accounts": [
+        "deals": [
             {
-                **account_card(ctx, account, scored),
+                **deal_card(ctx, deal, scored),
                 "attention_terms": [t for t in scored["terms"] if t["value"]],
             }
-            for account, scored in rows
+            for deal, scored in rows
         ],
         "count": len(rows),
     }

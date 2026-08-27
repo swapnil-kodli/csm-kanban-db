@@ -12,12 +12,12 @@ only known-good dataset the project has:
 Delete it and all three become unverifiable, which matters most while the
 Postgres port is in flight and needs something to diff against.
 
-Idempotent: runs only when the `account` table is empty.
+Idempotent: runs only when the `company` table is empty.
 
 Real-estate GTM flavour, continuous with the PropSignal pipeline. Rupee amounts
 are stored as integers; the UI formats them in Indian short scale.
 
-The health curves are calibrated rather than hand-written: each account declares
+The health curves are calibrated rather than hand-written: each client declares
 a target score curve, and the seed back-solves the daily active-user series that
 makes the live health engine reproduce that curve. The engine stays pure — no
 scores are written by hand, so `POST /api/jobs/recompute` is a no-op on a fresh
@@ -33,7 +33,8 @@ from sqlmodel import Session, select
 
 from bootstrap import DEFAULT_COLUMNS
 from models import (
-    Account,
+    Company,
+    Deal,
     BoardColumn,
     Contact,
     HealthSnapshot,
@@ -69,7 +70,7 @@ def _dt(days_ago: float, hour: int = 10) -> datetime:
 
 # --- accounts ----------------------------------------------------------------
 # Two axes, both real: `column` is where the engagement sits in the delivery
-# pipeline; `workstream` is what the team is doing on it right now. An account
+# pipeline; `workstream` is what the team is doing on it right now. A deal
 # in Approval can still be in Voice AI Calling.
 #
 # Commercials are deliberately uneven: one engagement underwater (DIG-08), one
@@ -259,7 +260,7 @@ RISKS = [
     ("FBP-12", "other", "high", "Budget pulled for the category", 40),
 ]
 
-# account key -> days since last recorded contact.
+# client key -> days since last recorded contact.
 #
 # Activity logging was removed, so `last_contact_at` is hand-maintained in the
 # drawer and seeded directly rather than derived from a timeline. These values
@@ -363,7 +364,7 @@ def demo_seed_enabled() -> bool:
 
 
 def seed_if_empty(session: Session) -> bool:
-    if session.exec(select(Account)).first() is not None:
+    if session.exec(select(Company)).first() is not None:
         return False
 
     # The CSM and the board columns are NOT created here any more. They are
@@ -388,7 +389,8 @@ def seed_if_empty(session: Session) -> bool:
     if missing:  # pragma: no cover - same guarantee
         raise RuntimeError(f"missing seeded columns: {sorted(missing)}")
 
-    by_key: dict[str, Account] = {}
+    by_key: dict[str, Deal] = {}
+    companies_by_key: dict[str, Company] = {}
 
     for spec in ACCOUNTS:
         line_items = [
@@ -400,19 +402,42 @@ def seed_if_empty(session: Session) -> bool:
         cost_items = [
             {"label": label, "amount": amount} for label, amount in spec.get("costs", [])
         ]
-        account = Account(
+        # One company, one deal — the same shape the v6 migration produces for
+        # a real v5 database, so the seed and a migrated book agree.
+        company = Company(
             key=spec["key"],
             name=spec["name"],
             city=spec["city"],
+            client_type=spec["client_type"],
+            owner_id=csm.id,
+            tags=[],
+        )
+        session.add(company)
+        session.flush()
+        companies_by_key[spec["key"]] = company
+
+        # POC first: deal.poc_id is mandatory, so the contact has to exist
+        # before the deal that names it.
+        poc_name, poc_email, poc_phone = spec["poc"]
+        poc = Contact(
+            company_id=company.id, name=poc_name, role="Primary contact",
+            email=poc_email, phone=poc_phone, is_primary=True, status="active",
+        )
+        session.add(poc)
+        session.flush()
+
+        deal = Deal(
+            key=f"{spec['key']}-01",
+            company_id=company.id,
+            poc_id=poc.id,
+            name=spec["name"],
             column_id=columns[spec["column"]].id,
             workstream=spec["workstream"],
             column_changed_at=_dt(spec.get("column_days_ago", 1)),
             mode=spec["mode"],
-            client_type=spec["client_type"],
-            owner_id=csm.id,
             last_nps=spec.get("last_nps"),
-            tags=[],
             comm_modes=spec.get("comm", ["email"]),
+            outcome="active",
             quoted_total=quoted_total,
             quoted_line_items=line_items,
             quoted_at=TODAY - timedelta(days=spec.get("quoted_days_ago", 30)),
@@ -424,23 +449,23 @@ def seed_if_empty(session: Session) -> bool:
             ),
             last_contact_at=_dt(LAST_CONTACT_DAYS[spec["key"]]),
         )
-        session.add(account)
+        session.add(deal)
         session.flush()
-        by_key[spec["key"]] = account
+        by_key[spec["key"]] = deal
 
     # Seat entitlement follows deal size, which the health engine divides by.
     quote_ladder = [a.quoted_total for a in by_key.values()]
-    for account in by_key.values():
-        band = health_engine.size_band_for(account.quoted_total, quote_ladder)
-        account.entitled_seats = SEATS_BY_SIZE[band]
-        session.add(account)
+    for deal in by_key.values():
+        band = health_engine.size_band_for(deal.quoted_total, quote_ladder)
+        deal.entitled_seats = SEATS_BY_SIZE[band]
+        session.add(deal)
 
     for key, name, role, champion, buyer, status in CONTACTS:
         slug = "".join(ch for ch in name.split()[0].lower() if ch.isalpha())
-        domain = by_key[key].name.split()[0].lower()
+        domain = companies_by_key[key].name.split()[0].lower()
         session.add(
             Contact(
-                account_id=by_key[key].id,
+                company_id=companies_by_key[key].id,
                 name=name,
                 role=role,
                 email=f"{slug}@{domain}.in",
@@ -451,33 +476,14 @@ def seed_if_empty(session: Session) -> bool:
             )
         )
 
-    # Exactly one primary per account. The POC named in the account spec is that
-    # person; match the contact already seeded for them rather than duplicating.
+    # The POC is created before its deal above — deal.poc_id is mandatory, so
+    # it cannot be reconciled afterwards the way the flat account model allowed.
     session.flush()
-    contacts_by_account: dict[str, list[Contact]] = {}
-    for c in session.exec(select(Contact)).all():
-        contacts_by_account.setdefault(c.account_id, []).append(c)
-
-    for spec in ACCOUNTS:
-        account = by_key[spec["key"]]
-        poc_name, poc_email, poc_phone = spec["poc"]
-        rows = contacts_by_account.get(account.id, [])
-        primary = next((c for c in rows if c.name == poc_name), None)
-        if primary is None:
-            primary = Contact(
-                account_id=account.id, name=poc_name, role="Primary contact",
-                status="active",
-            )
-            session.add(primary)
-        primary.is_primary = True
-        primary.email = poc_email
-        primary.phone = poc_phone
-        session.add(primary)
 
     for key, rtype, severity, note, days_ago in RISKS:
         session.add(
             Risk(
-                account_id=by_key[key].id,
+                deal_id=by_key[key].id,
                 type=rtype,
                 severity=severity,
                 status="open",
@@ -486,18 +492,18 @@ def seed_if_empty(session: Session) -> bool:
             )
         )
 
-    contacts_by_account = {}
+    contacts_by_company = {}
     for c in session.exec(select(Contact)).all():
-        contacts_by_account.setdefault(c.account_id, []).append(c)
+        contacts_by_company.setdefault(c.company_id, []).append(c)
 
     session.commit()
 
     # --- calibrate usage + health history ------------------------------------
     for spec in ACCOUNTS:
-        account = by_key[spec["key"]]
-        eng = health_engine.engagement_component(session, account)
-        sup = health_engine.support_component(session, account)
-        sent = health_engine.sentiment_component(account)
+        deal = by_key[spec["key"]]
+        eng = health_engine.engagement_component(session, deal)
+        sup = health_engine.support_component(session, deal)
+        sent = health_engine.sentiment_component(deal)
 
         days = list(range(USAGE_HISTORY_DAYS - 1, -1, -1))  # oldest -> today
         targets = [interpolate(spec["curve"], d) for d in days]
@@ -510,13 +516,13 @@ def seed_if_empty(session: Session) -> bool:
                 targets[-1] = want_today + bump
                 break
 
-        avg, users = build_usage_series(targets, eng, sup, sent, account.entitled_seats)
+        avg, users = build_usage_series(targets, eng, sup, sent, deal.entitled_seats)
 
         for offset, (day_ago, active) in enumerate(zip(days, users)):
             captured = TODAY - timedelta(days=day_ago)
             session.add(
                 UsageMetric(
-                    account_id=account.id,
+                    deal_id=deal.id,
                     captured_on=captured,
                     active_users=active,
                     sessions=active * 3 + (offset % 5),
@@ -530,7 +536,7 @@ def seed_if_empty(session: Session) -> bool:
             usage = int(round(avg[i]))
             session.add(
                 HealthSnapshot(
-                    account_id=account.id,
+                    deal_id=deal.id,
                     captured_on=TODAY - timedelta(days=day_ago),
                     score=int(round(interpolate(spec["curve"], day_ago))),
                     usage=usage,
@@ -543,10 +549,10 @@ def seed_if_empty(session: Session) -> bool:
     session.commit()
 
     for bucket, key, title, ttype, priority, due_offset, provenance, rule_key, done_days in TASKS:
-        account = by_key[key]
+        deal = by_key[key]
         session.add(
             Task(
-                account_id=account.id,
+                deal_id=deal.id,
                 title=title,
                 type=ttype,
                 bucket=bucket,
@@ -570,11 +576,11 @@ def seed_if_empty(session: Session) -> bool:
     for spec in ACCOUNTS:
         if spec.get("override"):
             band, reason = spec["override"]
-            account = by_key[spec["key"]]
-            account.health_manual_override = band
-            account.health_override_reason = reason
-            account.health_override_at = _dt(4)
-            session.add(account)
+            deal = by_key[spec["key"]]
+            deal.health_manual_override = band
+            deal.health_override_reason = reason
+            deal.health_override_at = _dt(4)
+            session.add(deal)
     session.commit()
 
     from engines import alerts as alert_engine

@@ -3,6 +3,10 @@ client renders columns as given.
 
 v1's three-view toggle is gone. Health is a card indicator and a filter now, not
 a column set; tasks survive as an entity and live in the drawer, not as buckets.
+
+Since the split the card is a DEAL, not a client. Only active deals reach the
+board: completed and lost ones stay queryable on the company view, which is
+where "how many won, how many lost" is answered.
 """
 from __future__ import annotations
 
@@ -12,11 +16,11 @@ from fastapi import APIRouter, Depends, Query
 from sqlmodel import Session
 
 from db import get_session
-from engines.attention import BookContext, score_account
+from engines.attention import BookContext, score_deal
 from serializers import (
     LANE_ORDER,
-    account_card,
-    account_matches,
+    deal_card,
+    deal_matches,
     lane_for,
     parse_filters,
 )
@@ -34,17 +38,18 @@ def get_board(
 ):
     f = parse_filters(filters)
     ctx = BookContext(session)
-    scored = {a.id: score_account(ctx, a) for a in ctx.accounts}
+    scored = {d.id: score_deal(ctx, d) for d in ctx.deals}
 
     cards = [
-        account_card(ctx, a, scored[a.id])
-        for a in ctx.accounts
-        if account_matches(ctx, a, f)
+        deal_card(ctx, d, scored[d.id])
+        for d in ctx.deals
+        if deal_matches(ctx, d, f)
     ]
 
-    accounts_by_id = {a.id: a for a in ctx.accounts}
+    deals_by_id = {d.id: d for d in ctx.deals}
     for card in cards:
-        key, title = lane_for(group_by, accounts_by_id[card["account_id"]])
+        deal = deals_by_id[card["deal_id"]]
+        key, title = lane_for(group_by, deal, ctx.company_by_id.get(deal.company_id))
         card["lane"] = key
         card["lane_title"] = title
 
@@ -84,8 +89,10 @@ def get_board(
         # whether zero means "no clients yet" or "these filters match nothing".
         # Those are opposite situations wanting opposite calls to action, so the
         # unfiltered book size travels with the board.
-        "book_size": len(ctx.accounts),
+        "book_size": len(ctx.deals),
         "archived_count": ctx.archived_count,
+        # The split's new fact: how many clients this book of work spans.
+        "company_count": len(ctx.company_ids),
     }
 
 

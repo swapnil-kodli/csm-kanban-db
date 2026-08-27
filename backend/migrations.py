@@ -26,6 +26,8 @@ import json
 import logging
 import uuid
 from datetime import datetime
+
+from dbtypes import utcnow
 from typing import Optional
 
 from sqlalchemy import text
@@ -33,7 +35,7 @@ from sqlmodel import Session
 
 log = logging.getLogger("signal.migrations")
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # v1 lifecycle_stage -> v2 column. The v2 pipeline has no terminal-negative
 # state, so `closed` accounts land in `launch` and are logged by name for the
@@ -193,10 +195,177 @@ def migrate(session: Session) -> dict:
     v5 = _migrate_v4_to_v5(session)
     if v5.get("migrated"):
         result = {**result, "v5": v5}
+    v6 = _migrate_v5_to_v6(session)
+    if v6.get("migrated"):
+        result = {**result, "v6": v6}
     dropped = _drop_saved_views(session)
     if dropped is not None:
         result = {**result, "saved_views_dropped": dropped}
     return result
+
+
+def _migrate_v5_to_v6(session: Session) -> dict:
+    """Split `account` into `company` + `deal`, and re-point every child.
+
+    Each account becomes exactly one company and one deal, so nothing is lost
+    and nothing is invented. The company keeps the account's ID, which is the
+    trick that makes the whole thing tractable: `contact.account_id` already
+    holds values that are valid `company_id`s, so re-pointing contacts is a
+    column rename with no data rewrite and no lookup table.
+
+    Children of the WORK (task, healthsnapshot, risk, usagemetric, activity) go
+    to the deal instead, which does need a map, because the deal gets a fresh
+    ID — it has to, since the account ID is now the company's.
+
+    Ordering note, learned the hard way in v5: main.bootstrap() calls init_db()
+    BEFORE migrate(), so `company` and `deal` already exist and are empty when
+    this runs. That is expected here rather than fought.
+    """
+    tables = _table_names(session)
+    if "account" not in tables:
+        return {"migrated": False, "reason": "already on the v6 schema"}
+
+    _ensure_meta(session)
+    log.warning("Splitting account into company + deal, v5 -> v6")
+
+    accounts = session.exec(text("SELECT * FROM account")).mappings().all()
+    now = utcnow().isoformat()
+
+    # --- 1. company, keeping the account's id --------------------------------
+    for a in accounts:
+        session.exec(
+            text(
+                "INSERT INTO company (id, created_at, updated_at, key, name, "
+                "client_type, city, owner_id, tags, archived_at) VALUES "
+                "(:id, :created, :updated, :key, :name, :ct, :city, :owner, :tags, :arch)"
+            ).bindparams(
+                id=a["id"], created=a["created_at"], updated=a["updated_at"],
+                key=a["key"], name=a["name"], ct=a["client_type"], city=a["city"],
+                owner=a["owner_id"], tags=a["tags"] or "[]", arch=a["archived_at"],
+            )
+        )
+
+    # --- 2. contacts re-point by column rename -------------------------------
+    # Values are already correct because company.id == account.id. Drop the
+    # index on the old column first: SQLite refuses to rename a column out from
+    # under an index that names it, and the error surfaces at the rename rather
+    # than at the index (STANDING RULE, see module docstring).
+    contact_cols = _columns(session, "contact")
+    if "account_id" in contact_cols:
+        _drop_indexes_for(session, "contact", ["account_id"])
+        session.exec(text("ALTER TABLE contact RENAME COLUMN account_id TO company_id"))
+
+    # --- 3. deals ------------------------------------------------------------
+    # POC is mandatory, so every company needs a contact before its deal exists.
+    account_to_deal: dict[str, str] = {}
+    placeholders = 0
+    for a in accounts:
+        poc = session.exec(
+            text(
+                "SELECT id FROM contact WHERE company_id = :cid "
+                "ORDER BY is_primary DESC, created_at ASC LIMIT 1"
+            ).bindparams(cid=a["id"])
+        ).first()
+
+        if poc is None:
+            # A company with no contact at all. Rather than make poc_id nullable
+            # — which would hide the gap in every deal for the rest of the
+            # product's life — create a visible placeholder for someone to fix.
+            poc_id = str(uuid.uuid4())
+            session.exec(
+                text(
+                    "INSERT INTO contact (id, created_at, updated_at, company_id, "
+                    "name, role, is_primary, is_champion, is_economic_buyer, status) "
+                    "VALUES (:id, :now, :now, :cid, 'Unknown POC', '', 1, 0, 0, 'active')"
+                ).bindparams(id=poc_id, now=now, cid=a["id"])
+            )
+            placeholders += 1
+        else:
+            poc_id = poc[0]
+
+        deal_id = str(uuid.uuid4())
+        account_to_deal[a["id"]] = deal_id
+        session.exec(
+            text(
+                "INSERT INTO deal (id, created_at, updated_at, key, company_id, "
+                "poc_id, name, column_id, workstream, column_changed_at, mode, "
+                "health_score, health_band, health_manual_override, "
+                "health_override_reason, health_override_at, health_note, "
+                "entitled_seats, last_nps, comm_modes, quoted_total, "
+                "quoted_line_items, quoted_at, quote_notes, revenue_recognised, "
+                "cost_items, handoff_received_at, last_contact_at, "
+                "attention_score, pinned, outcome, archived_at) VALUES "
+                "(:id, :created, :updated, :key, :cid, :poc, :name, :col, :ws, "
+                ":cca, :mode, :hs, :hb, :hmo, :hor, :hoa, :hn, :seats, :nps, "
+                ":cm, :qt, :qli, :qa, :qn, :rr, :ci, :hra, :lca, :att, :pin, "
+                "'active', :arch)"
+            ).bindparams(
+                id=deal_id, created=a["created_at"], updated=a["updated_at"],
+                # Sequential per company; every account becomes that company's
+                # first deal, so -01 across the board.
+                key=f"{a['key']}-01", cid=a["id"], poc=poc_id,
+                # The deal inherits the account's name. Companies and their
+                # first deal therefore read alike until someone renames one,
+                # which is the honest starting point — the split did not invent
+                # information about what the engagement is called.
+                name=a["name"],
+                col=a["column_id"], ws=a["workstream"], cca=a["column_changed_at"],
+                mode=a["mode"], hs=a["health_score"], hb=a["health_band"],
+                hmo=a["health_manual_override"], hor=a["health_override_reason"],
+                hoa=a["health_override_at"], hn=a["health_note"],
+                seats=a["entitled_seats"], nps=a["last_nps"],
+                cm=a["comm_modes"] or "[]", qt=a["quoted_total"],
+                qli=a["quoted_line_items"] or "[]", qa=a["quoted_at"],
+                qn=a["quote_notes"], rr=a["revenue_recognised"],
+                ci=a["cost_items"] or "[]", hra=a["handoff_received_at"],
+                lca=a["last_contact_at"], att=a["attention_score"],
+                pin=a["pinned"], arch=a["archived_at"],
+            )
+        )
+
+    # Backfills are DML and do NOT auto-commit, unlike the DDL below. Commit
+    # here or a later DDL failure rolls these back while leaving the schema
+    # changed — a half-migrated database that looks migrated.
+    session.commit()
+
+    # --- 4. work children re-point to the deal -------------------------------
+    moved = {}
+    for table in ("task", "healthsnapshot", "risk", "usagemetric", "activity"):
+        if table not in tables:
+            continue
+        cols = _columns(session, table)
+        if "account_id" not in cols:
+            continue
+        _drop_indexes_for(session, table, ["account_id"])
+        session.exec(text(f"ALTER TABLE {table} RENAME COLUMN account_id TO deal_id"))
+        session.commit()
+        n = 0
+        for account_id, deal_id in account_to_deal.items():
+            n += session.exec(
+                text(f"UPDATE {table} SET deal_id = :d WHERE deal_id = :a")
+                .bindparams(d=deal_id, a=account_id)
+            ).rowcount
+        session.commit()
+        moved[table] = n
+
+    # --- 5. the account table is now fully represented elsewhere -------------
+    _drop_indexes_for(session, "account", list(_columns(session, "account")))
+    session.exec(text("DROP TABLE account"))
+
+    _set_version(session, 6)
+    session.commit()
+    log.warning(
+        "v6 complete: %d account(s) -> %d company + %d deal, children moved %s, "
+        "placeholder POCs %d",
+        len(accounts), len(accounts), len(account_to_deal), moved, placeholders,
+    )
+    return {
+        "migrated": True,
+        "companies": len(accounts),
+        "deals": len(account_to_deal),
+        "children_moved": moved,
+        "placeholder_pocs": placeholders,
+    }
 
 
 def _drop_saved_views(session: Session) -> Optional[int]:

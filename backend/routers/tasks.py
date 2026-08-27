@@ -1,4 +1,4 @@
-"""Tasks. account_id is required — no orphan tasks, ever."""
+"""Tasks. deal_id is required — no orphan tasks, ever."""
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
@@ -9,7 +9,7 @@ from sqlmodel import Session, select
 
 from db import get_session
 from dbtypes import utcnow
-from models import Account, Task, User
+from models import Deal, Task, User
 from schemas import TaskCreate, TaskPatch
 from serializers import task_card
 
@@ -22,7 +22,7 @@ DEFAULT_DUE_DAYS = {"today": 0, "this_week": 3, "follow_up": 10, "waiting": 7, "
 def list_tasks(
     bucket: Optional[str] = None,
     status: Optional[str] = None,
-    account_id: Optional[str] = None,
+    deal_id: Optional[str] = None,
     overdue: bool = False,
     session: Session = Depends(get_session),
 ):
@@ -31,28 +31,33 @@ def list_tasks(
         query = query.where(Task.bucket == bucket)
     if status:
         query = query.where(Task.status == status)
-    if account_id:
-        query = query.where(Task.account_id == account_id)
+    if deal_id:
+        query = query.where(Task.deal_id == deal_id)
     tasks = session.exec(query).all()
     if overdue:
         today = date.today()
         tasks = [t for t in tasks if t.status == "open" and t.due_date < today]
-    accounts = {
-        a.id: a
-        for a in session.exec(
-            select(Account).where(Account.archived_at == None)  # noqa: E711
+    # Tasks on a completed or lost deal are history, not work — they drop off
+    # the task list with their deal, same as the card does off the board.
+    deals = {
+        d.id: d
+        for d in session.exec(
+            select(Deal).where(
+                Deal.archived_at == None,  # noqa: E711
+                Deal.outcome == "active",
+            )
         ).all()
     }
-    cards = [task_card(t, accounts[t.account_id]) for t in tasks if t.account_id in accounts]
+    cards = [task_card(t, deals[t.deal_id]) for t in tasks if t.deal_id in deals]
     cards.sort(key=lambda c: (c["due_date"], c["sort_index"]))
     return {"tasks": cards, "count": len(cards)}
 
 
 @router.post("", status_code=201)
 def create_task(payload: TaskCreate, session: Session = Depends(get_session)):
-    account = session.get(Account, payload.account_id)
-    if account is None:
-        raise HTTPException(status_code=404, detail="Account not found")
+    deal = session.get(Deal, payload.deal_id)
+    if deal is None:
+        raise HTTPException(status_code=404, detail="Deal not found")
     owner = session.exec(select(User)).first()
     if owner is None:
         raise HTTPException(status_code=409, detail="No CSM seeded")
@@ -61,7 +66,7 @@ def create_task(payload: TaskCreate, session: Session = Depends(get_session)):
         date.today() + timedelta(days=DEFAULT_DUE_DAYS.get(payload.bucket, 3))
     )
     task = Task(
-        account_id=account.id,
+        deal_id=deal.id,
         title=payload.title.strip(),
         type=payload.type,
         bucket=payload.bucket,
@@ -75,7 +80,7 @@ def create_task(payload: TaskCreate, session: Session = Depends(get_session)):
     session.add(task)
     session.commit()
     session.refresh(task)
-    return {"task": task_card(task, account)}
+    return {"task": task_card(task, deal)}
 
 
 @router.patch("/{task_id}")
@@ -104,8 +109,8 @@ def patch_task(task_id: str, payload: TaskPatch, session: Session = Depends(get_
     session.commit()
     session.refresh(task)
 
-    account = session.get(Account, task.account_id)
-    return {"task": task_card(task, account)}
+    deal = session.get(Deal, task.deal_id)
+    return {"task": task_card(task, deal)}
 
 
 @router.delete("/{task_id}", status_code=204)

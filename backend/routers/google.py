@@ -1,4 +1,4 @@
-"""Gmail integration — read-only thread listing for an account's POC.
+"""Gmail integration — read-only thread listing for a deal's POC.
 
 Auth is OAuth2 authorization-code flow, server-side. There is no API-key path to
 a user's Gmail. The client secret and refresh token never leave the backend and
@@ -43,7 +43,7 @@ from sqlmodel import Session, select
 
 from db import get_session
 from dbtypes import as_utc, utcnow
-from models import Account, GoogleCredential
+from models import Deal, GoogleCredential
 
 log = logging.getLogger("signal.google")
 router = APIRouter(prefix="/google", tags=["google"])
@@ -58,7 +58,7 @@ THREAD_CACHE_TTL_SECONDS = 300
 
 # nonce -> (app_base, expires_at). Single-process, single-user MVP.
 _pending_states: dict[str, tuple[str, float]] = {}
-# account_id -> (fetched_at, payload)
+# deal_id -> (fetched_at, payload)
 _thread_cache: dict[str, tuple[float, dict]] = {}
 
 
@@ -268,46 +268,54 @@ def disconnect(session: Session = Depends(get_session)):
     return {"connected": False}
 
 
-def invalidate_account_threads(account_id: str) -> None:
-    """Drop one account's cached threads.
+def invalidate_deal_threads(deal_id: str) -> None:
+    """Drop one deal's cached threads.
 
-    Called whenever the primary contact changes or their address is edited —
-    the cache is keyed on the account but the query is built from that email,
+    Called whenever the deal's POC changes or that contact's address is edited.
+    The cache is keyed on the deal but the query is built from the POC's email,
     so a stale entry would keep answering for the wrong person.
     """
-    _thread_cache.pop(account_id, None)
+    _thread_cache.pop(deal_id, None)
 
 
-def primary_email(session: Session, account: Account) -> Optional[str]:
+def poc_email(session: Session, deal: Deal) -> Optional[str]:
+    """The email the thread query is built from: this DEAL's POC.
+
+    Not the company's primary contact. Two deals with the same client can have
+    different counterparts, and the panel has to show the correspondence that
+    belongs to the engagement being looked at.
+    """
     from models import Contact
 
-    primary = session.exec(
-        select(Contact).where(
-            Contact.account_id == account.id,
-            Contact.is_primary == True,  # noqa: E712
-        )
-    ).first()
-    return primary.email if primary else None
+    poc = session.get(Contact, deal.poc_id)
+    return poc.email if poc else None
 
 
-def fetch_threads(session: Session, account: Account, limit: int = 20) -> dict:
-    """The four states the panel must handle, resolved server-side."""
+def fetch_threads(session: Session, deal: Deal, limit: int = 20) -> dict:
+    """The states the panel must handle, all resolved server-side."""
     if not gmail_enabled():
         return {"state": "disabled", "threads": []}
-    poc_email = primary_email(session, account)
-    if not poc_email:
+    address = poc_email(session, deal)
+    if not address:
         return {"state": "no_poc_email", "threads": []}
     cred = _credential(session)
     if cred is None:
         return {"state": "not_connected", "threads": []}
 
-    cached = _thread_cache.get(account.id)
+    cached = _thread_cache.get(deal.id)
     if cached and time.time() - cached[0] < THREAD_CACHE_TTL_SECONDS:
         return cached[1]
 
     try:
         token = _access_token(session, cred)
-        query = urllib.parse.quote(f"from:{poc_email} OR to:{poc_email}")
+        # `cc:` is required and is not implied by `to:` — Gmail treats them as
+        # separate headers, so without it every group thread where the POC was
+        # copied rather than addressed goes missing, which is precisely the
+        # context history this panel exists to surface.
+        # `bcc:` is not searchable at all; that gap is accepted, not worked around.
+        query = urllib.parse.quote(
+            f"from:{address} OR to:{address} OR cc:{address}"
+        )
         listing = _get_json(
             f"{GMAIL_API}/users/me/threads?maxResults={limit}&q={query}", token
         )
@@ -350,22 +358,22 @@ def fetch_threads(session: Session, account: Account, limit: int = 20) -> dict:
                 }
             )
         payload = {"state": "ok", "threads": threads}
-        _thread_cache[account.id] = (time.time(), payload)
+        _thread_cache[deal.id] = (time.time(), payload)
         return payload
     except urllib.error.HTTPError as exc:
-        log.warning("Gmail fetch failed for %s: %s", account.key, exc)
+        log.warning("Gmail fetch failed for %s: %s", deal.key, exc)
         state = "token_expired" if exc.code in (401, 403) else "error"
         return {"state": state, "threads": [], "detail": f"Gmail returned {exc.code}"}
     except Exception as exc:  # never let Gmail break the drawer
-        log.warning("Gmail fetch failed for %s: %s", account.key, exc)
+        log.warning("Gmail fetch failed for %s: %s", deal.key, exc)
         return {"state": "error", "threads": [], "detail": str(exc)}
 
 
-@router.get("/accounts/{account_id}/threads")
-def account_threads(
-    account_id: str, limit: int = Query(20, ge=1, le=50), session: Session = Depends(get_session)
+@router.get("/deals/{deal_id}/threads")
+def deal_threads(
+    deal_id: str, limit: int = Query(20, ge=1, le=50), session: Session = Depends(get_session)
 ):
-    account = session.get(Account, account_id)
-    if account is None:
-        raise HTTPException(status_code=404, detail="Account not found")
-    return fetch_threads(session, account, limit)
+    deal = session.get(Deal, deal_id)
+    if deal is None:
+        raise HTTPException(status_code=404, detail="Deal not found")
+    return fetch_threads(session, deal, limit)

@@ -39,62 +39,68 @@ class CostItem(BaseModel):
     amount: int = Field(ge=0)
 
 
-class AccountCreate(BaseModel):
-    """Everything needed to put a real client on the board, and nothing more.
+Outcome = Literal["active", "completed", "lost"]
 
-    Four required fields, because those are the four the card renders. Anything
-    optional here is something the drawer can fill in later; making it required
-    would block someone from recording a client they have not fully scoped yet,
-    which is exactly when they most want it on the board.
 
-    `key` is absent on purpose: it is derived server-side and immutable, so the
-    board's identifiers stay collision-free without anyone having to think about
-    them. `column_id` is absent too — new work lands in the default entry
-    column, which IS the handoff inbox.
-    """
+class CompanyCreate(BaseModel):
+    """The client organisation. Two required fields, because two is all the
+    company itself needs — everything about the WORK belongs to a Deal."""
 
     name: str = Field(min_length=1, max_length=120)
-    mode: Mode
     client_type: ClientType
-    workstream: Workstream
 
     city: Optional[str] = Field(default=None, max_length=120)
     tags: Optional[list[str]] = None
-    comm_modes: Optional[list[CommMode]] = None
-    last_contact_at: Optional[datetime] = None
-    quoted_total: Optional[int] = Field(default=None, ge=0)
-    quoted_at: Optional[date] = None
-    quote_notes: Optional[str] = None
 
-    # The first POC, created alongside the account when a name is given. The
-    # drawer supports several; this is just the one you almost always have at
-    # the moment you create the client.
+    # The first contact, created alongside the company. Not required, but a
+    # company with no contact cannot have a deal — deal.poc_id is mandatory —
+    # so the New Deal flow will ask for one the moment it is needed.
     primary_contact_name: Optional[str] = Field(default=None, max_length=120)
     primary_contact_role: Optional[str] = Field(default=None, max_length=120)
     primary_contact_email: Optional[str] = None
     primary_contact_phone: Optional[str] = None
 
 
-class AccountHardDelete(BaseModel):
-    """Typed confirmation for the irreversible path.
+class CompanyPatch(BaseModel):
+    """`key` is absent on purpose — immutable, so filters and shared URLs
+    survive a rename."""
 
-    A client owns contacts, tasks, health snapshots, costing and PNL history,
-    and with the demo seed off there is nothing to restore from. The client's
-    key must be typed back exactly, so the destructive action cannot be reached
-    by clicking through.
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    client_type: Optional[ClientType] = None
+    city: Optional[str] = Field(default=None, max_length=120)
+    tags: Optional[list[str]] = None
+
+
+class DealCreate(BaseModel):
+    """An engagement. `company_id` and `poc_id` are both mandatory.
+
+    `poc_id` must name a contact belonging to `company_id`; that is checked in
+    the router, not just the picker. A cross-company POC would put one client's
+    contact — and their correspondence — on another client's drawer.
+
+    `key` and `column_id` are absent: the key is derived per company, and new
+    work lands in the default entry column, which the drawer shows read-only.
     """
 
-    confirm_key: str = Field(min_length=1, max_length=40)
+    company_id: str
+    poc_id: str
+    name: str = Field(min_length=1, max_length=120)
+    mode: Mode
+    workstream: Workstream
+
+    comm_modes: Optional[list[CommMode]] = None
+    last_contact_at: Optional[datetime] = None
+    quoted_total: Optional[int] = Field(default=None, ge=0)
+    quoted_at: Optional[date] = None
+    quote_notes: Optional[str] = None
 
 
-class AccountPatch(BaseModel):
-    name: Optional[str] = None
-    city: Optional[str] = None
+class DealPatch(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
     column_id: Optional[str] = None
     workstream: Optional[Workstream] = None
     mode: Optional[Mode] = None
-    client_type: Optional[ClientType] = None
-    tags: Optional[list[str]] = None
+    poc_id: Optional[str] = None
     pinned: Optional[bool] = None
     last_nps: Optional[int] = None
     health_note: Optional[str] = None
@@ -103,7 +109,7 @@ class AccountPatch(BaseModel):
     last_contact_at: Optional[datetime] = None
     comm_modes: Optional[list[CommMode]] = None
 
-    # Costing is fully manual now. quoted_total is an independent field: the UI
+    # Costing is fully manual. quoted_total is an independent field: the UI
     # shows a soft hint when it disagrees with the line items rather than
     # overwriting what someone typed.
     quoted_total: Optional[int] = Field(default=None, ge=0)
@@ -114,6 +120,30 @@ class AccountPatch(BaseModel):
     # pnl
     revenue_recognised: Optional[int] = Field(default=None, ge=0)
     cost_items: Optional[list[CostItem]] = None
+
+
+class DealOutcomeIn(BaseModel):
+    """Marking a deal done or dead.
+
+    A reason is required for `lost` and optional otherwise: "why did we lose
+    this" is the whole value of recording the loss, while "why did we finish"
+    is usually just "we finished".
+    """
+
+    outcome: Outcome
+    reason: Optional[str] = Field(default=None, max_length=280)
+
+
+class HardDeleteIn(BaseModel):
+    """Typed confirmation for the irreversible path.
+
+    A company owns contacts and deals, and each deal owns tasks, health
+    snapshots, costing and PNL history. With the demo seed off there is nothing
+    to restore from, so the key must be typed back exactly and the destructive
+    action cannot be reached by clicking through.
+    """
+
+    confirm_key: str = Field(min_length=1, max_length=40)
 
 
 class HealthOverrideIn(BaseModel):
@@ -161,7 +191,7 @@ class ActivityCreate(BaseModel):
 
 
 class ContactCreate(BaseModel):
-    account_id: str
+    company_id: str
     is_primary: bool = False
     name: str = Field(min_length=1, max_length=120)
     # Blank on purpose: a contact is added as an empty row and filled in inline,
