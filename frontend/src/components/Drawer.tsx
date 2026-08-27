@@ -640,9 +640,16 @@ export function Drawer({
               className="btn btn-sm danger subtle"
               onClick={() => setConfirmDelete(true)}
             >
-              Delete client
+              {/* "Delete deal", not "Delete client" — this removes ONE
+                  engagement. Deleting the client is a different, much larger
+                  action and lives on the company view. Since the split those
+                  are genuinely different consequences, so the labels have to
+                  say which one you are about to take. */}
+              Delete deal
             </button>
-            <span className="panel-muted">Moves to Trash. Nothing is destroyed.</span>
+            <span className="panel-muted">
+              Moves this deal to Trash. The client and its other deals are untouched.
+            </span>
           </div>
 
         </div>

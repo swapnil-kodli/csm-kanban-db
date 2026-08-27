@@ -152,7 +152,17 @@ class HealthOverrideIn(BaseModel):
 
 
 class TaskCreate(BaseModel):
-    account_id: str
+    # A task belongs to a DEAL, not a client: "chase the contract" is about one
+    # engagement, and a client with three deals would otherwise collect tasks
+    # with no way to tell which work they belong to.
+    #
+    # This field was the last `account_id` left in the backend after the split.
+    # routers/tasks.py was renamed, the frontend was renamed, and this one line
+    # was not — so every manual task creation 422'd on a missing `account_id`
+    # while sending a perfectly good `deal_id`. Found by driving the New Task
+    # dialog rather than by reading, because the router and the model agreed
+    # with each other; only the wire contract disagreed.
+    deal_id: str
     title: str = Field(min_length=1, max_length=200)
     type: TaskType = "admin"
     bucket: TaskBucket = "today"

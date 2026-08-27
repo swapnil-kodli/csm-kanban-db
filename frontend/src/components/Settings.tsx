@@ -12,6 +12,16 @@ import type { ColumnConfig, ColumnImpact } from "../lib/types";
  * choice. Recolouring is restricted to the token palette rather than a free
  * picker, so the board keeps one saturated channel for health.
  */
+/** Why this column cannot be archived right now, or null when it can be.
+ *  Mirrors the server's two 409 guards so the UI and the API agree. */
+function archiveBlocker(c: ColumnConfig): string | null {
+  if (c.is_default_entry)
+    return `${c.label} is the entry column — new engagements land here. Make another column the entry first.`;
+  if (c.card_count > 0)
+    return `${c.label} still holds ${c.card_count} ${c.card_count === 1 ? "deal" : "deals"}. Move them out before archiving it.`;
+  return null;
+}
+
 export function Settings({ onChanged }: { onChanged: () => void }) {
   const [columns, setColumns] = useState<ColumnConfig[]>([]);
   const [palette, setPalette] = useState<string[]>([]);
@@ -158,8 +168,22 @@ export function Settings({ onChanged }: { onChanged: () => void }) {
 
             <span className="col-count">{c.card_count}</span>
 
+            {/* Two constraints stop a column being archived: it is the entry
+                column (new work would have nowhere to land), or it still holds
+                cards (they would vanish from the board). The server enforces
+                both with a 409 carrying the reason — but a button that only
+                explains itself AFTER the click reads as broken, which is
+                exactly how it was reported. Same idiom as the POC-delete
+                guard: put the constraint on the control. */}
             <button
               className="btn btn-sm subtle"
+              disabled={!c.is_archived && Boolean(archiveBlocker(c))}
+              title={
+                c.is_archived
+                  ? `Bring ${c.label} back onto the board`
+                  : archiveBlocker(c) ??
+                    `Hide ${c.label} from the board; its cards and history are kept`
+              }
               onClick={() =>
                 run(() => apiPatch(`/columns/${c.id}`, { is_archived: !c.is_archived }))
               }
