@@ -85,9 +85,35 @@ class User(Stamped, table=True):
     # but anyone writing raw SQL later would trip over it.
     __tablename__ = "app_user"
 
+    # Google's subject claim is the identity key, NOT the email. A person can
+    # change their address inside a Workspace and `sub` stays the same; keying
+    # on email would silently create a second account and orphan everything the
+    # first one owns. Nullable only so the bootstrap CSM row can exist before
+    # anyone has signed in.
+    google_sub: Optional[str] = Field(default=None, unique=True, index=True)
+    email: Optional[str] = Field(default=None, index=True)
+    avatar_url: Optional[str] = None
+    is_active: bool = True
+    last_login_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
+
     name: str
     initials: str
     avatar_color: str = "#111111"
+
+
+class UserSession(Stamped, table=True):
+    """Server-side session. The cookie carries only an opaque id.
+
+    The Google tokens never go anywhere near the browser: the cookie is a
+    random handle, everything else is looked up here. That is what makes the
+    cookie safe to hand out as httpOnly+Secure+SameSite=Lax — stealing it gets
+    you a session that can be revoked, not a refresh token that cannot.
+    """
+
+    user_id: str = Field(foreign_key="app_user.id", index=True)
+    expires_at: datetime = Field(sa_type=TZDateTime, index=True)
+    # Coarse, for a "signed in from" line. Never used for auth decisions.
+    user_agent: Optional[str] = None
 
 
 class Company(Stamped, table=True):
@@ -302,10 +328,21 @@ class BoardColumn(Stamped, table=True):
 
 
 class GoogleCredential(Stamped, table=True):
-    """Single-row Gmail OAuth credential store (single-user MVP)."""
+    """One Gmail grant, per user.
 
+    Per-user and never pooled: the thread panel shows correspondence between the
+    SIGNED-IN user and the deal's POC, and nothing else. A teammate's threads
+    with the same POC never appear. That is the intended behaviour, not a gap to
+    engineer around — pooling would mean one person's consent exposing their
+    mailbox to everyone else on the team.
+
+    `refresh_token` is stored ENCRYPTED (see crypto.py). It is the long-lived
+    secret here: an access token expires in an hour, a refresh token does not.
+    """
+
+    user_id: str = Field(foreign_key="app_user.id", unique=True, index=True)
     email: Optional[str] = None
-    refresh_token: str
-    access_token: Optional[str] = None
+    refresh_token: str                      # ciphertext, never plaintext
+    access_token: Optional[str] = None      # in-memory lifetime only, an hour
     access_token_expires_at: Optional[datetime] = Field(default=None, sa_type=TZDateTime)
     scope: str = "https://www.googleapis.com/auth/gmail.readonly"

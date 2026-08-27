@@ -35,7 +35,7 @@ from sqlmodel import Session
 
 log = logging.getLogger("signal.migrations")
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # v1 lifecycle_stage -> v2 column. The v2 pipeline has no terminal-negative
 # state, so `closed` accounts land in `launch` and are logged by name for the
@@ -198,10 +198,77 @@ def migrate(session: Session) -> dict:
     v6 = _migrate_v5_to_v6(session)
     if v6.get("migrated"):
         result = {**result, "v6": v6}
+    v7 = _migrate_v6_to_v7(session)
+    if v7.get("migrated"):
+        result = {**result, "v7": v7}
     dropped = _drop_saved_views(session)
     if dropped is not None:
         result = {**result, "saved_views_dropped": dropped}
     return result
+
+
+def _migrate_v6_to_v7(session: Session) -> dict:
+    """Sign-in columns on app_user, and per-user Gmail credentials.
+
+    Additive only — no drops, no rewrites — because every existing row stays
+    valid: a database that has never had anyone sign in keeps its bootstrap CSM
+    with a NULL google_sub, and the first real sign-in adopts that row rather
+    than creating a second owner beside it.
+
+    The one destructive act is deliberate: any pre-existing googlecredential row
+    is deleted. It has no user to belong to, and its refresh token is plaintext
+    under the old schema while the new column expects ciphertext — carrying it
+    forward would mean either a token nobody owns or a decrypt failure on first
+    use. Reconnecting Gmail is one click; a silently broken grant is not.
+    """
+    tables = _table_names(session)
+    if "app_user" not in tables:
+        return {"migrated": False, "reason": "tables not created yet"}
+
+    _ensure_meta(session)
+    cols = _columns(session, "app_user")
+    new_user_cols = [
+        ("google_sub", "VARCHAR"),
+        ("email", "VARCHAR"),
+        ("avatar_url", "VARCHAR"),
+        ("is_active", "BOOLEAN DEFAULT 1"),
+        ("last_login_at", "DATETIME"),
+    ]
+    missing = [(n, t) for n, t in new_user_cols if n not in cols]
+
+    cred_cols = _columns(session, "googlecredential") if "googlecredential" in tables else set()
+    needs_cred = "googlecredential" in tables and "user_id" not in cred_cols
+
+    if not missing and not needs_cred:
+        return {"migrated": False, "reason": "already on the v7 schema"}
+
+    log.warning("Adding sign-in columns and per-user Gmail credentials, v6 -> v7")
+    for name, coltype in missing:
+        session.exec(text(f"ALTER TABLE app_user ADD COLUMN {name} {coltype}"))
+
+    dropped = 0
+    if needs_cred:
+        dropped = session.exec(text("SELECT count(*) FROM googlecredential")).first()[0]
+        # Rebuild rather than ALTER: the table gains a NOT NULL unique FK, which
+        # SQLite cannot add to a populated table in place.
+        session.exec(text("DROP TABLE googlecredential"))
+        if dropped:
+            log.warning(
+                "Dropped %d pre-split Gmail credential(s): no owning user, and a "
+                "plaintext token where the new column expects ciphertext. "
+                "Reconnect Gmail to restore access.",
+                dropped,
+            )
+
+    _set_version(session, 7)
+    session.commit()
+    log.warning("v7 complete: user columns %s, credentials reset %s",
+                [n for n, _ in missing], needs_cred)
+    return {
+        "migrated": True,
+        "user_columns_added": [n for n, _ in missing],
+        "credentials_dropped": dropped,
+    }
 
 
 def _migrate_v5_to_v6(session: Session) -> dict:

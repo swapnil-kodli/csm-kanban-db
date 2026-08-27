@@ -10,3 +10,9 @@ python-dateutil==2.9.0.post0
 # at import time on the first Postgres boot, which is the worst moment to
 # discover it.
 psycopg[binary]==3.2.3
+
+# Sign-in. Verifies Google's ID token against their published JWKS — signature,
+# issuer, audience and nonce — rather than trusting the token's own claims.
+# The [crypto] extra pulls in `cryptography`, which also encrypts the stored
+# Gmail refresh token (see crypto.py).
+pyjwt[crypto]==2.10.1

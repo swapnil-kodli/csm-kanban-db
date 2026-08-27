@@ -83,6 +83,94 @@ topbar flips from green `LIVE` to amber `LOCAL`, and a banner says changes will
 not save. The board degrades; it never goes blank. Writes never fall back — a
 silent no-op would lie about what was saved.
 
+## Sign-in and Gmail
+
+Both are **off by default**. The app is fully usable, demo-able and deployable
+with neither, running as a single CSM. Turn them on deliberately.
+
+### Google Cloud Console, once
+
+1. **APIs & Services → OAuth consent screen → Internal.**
+   Not External. External + Testing expires every refresh token after 7 days,
+   so the integration dies a week after each demo with no visible cause.
+   *Internal* is only selectable when the project belongs to the Workspace org.
+2. **Credentials → Create OAuth client ID → Web application.**
+3. **Authorised redirect URIs — register BOTH.** Google matches these exactly,
+   with no wildcards or pattern matching:
+
+   ```
+   https://marketplace.revspot.ai/p/signal-cs/api/google/callback
+   http://localhost:8080/api/google/callback
+   ```
+
+   Set `GOOGLE_REDIRECT_URI` to whichever one the deployment actually serves.
+   It is explicit configuration rather than something derived per request: the
+   frontend's nginx strips `/p/{slug}` before proxying so the backend cannot see
+   the slug, and building it from the `Host` header would be an open redirect.
+4. **Enable the Gmail API** for the project.
+
+### backend/.env
+
+```sh
+AUTH_ENABLED=true
+ALLOWED_EMAIL_DOMAINS=revspot.ai      # empty means NOBODY, not everybody
+SECRET_KEY=<python -c "import secrets; print(secrets.token_urlsafe(32))">
+
+GMAIL_ENABLED=true
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+GOOGLE_REDIRECT_URI=https://marketplace.revspot.ai/p/signal-cs/api/google/callback
+```
+
+`SECRET_KEY` encrypts the stored Gmail refresh token. It is required before
+Gmail can be connected, and is deliberately not generated at boot — a key that
+lived only in memory would invalidate every grant on restart and send everyone
+back through consent with no explanation.
+
+### Two grants, on purpose
+
+| | Scopes | When |
+|---|---|---|
+| Sign-in | `openid email profile` | At login. Non-sensitive, no Google review. |
+| Gmail | `gmail.readonly` | Later, per person, from the thread panel itself. |
+
+Asking for `gmail.readonly` at sign-in would put a restricted-scope consent
+screen in front of people who may never open the panel, and would make declining
+it look like failing to log in.
+
+### What the thread panel shows
+
+Correspondence between **the signed-in user** and **the deal's POC**. Nothing
+else. Query:
+
+```
+from:{poc} OR to:{poc} OR cc:{poc}
+```
+
+`cc:` is required and is not implied by `to:` — Gmail treats them as separate
+headers, so without it every group thread where the POC was copied rather than
+addressed goes missing, which is exactly the context history the panel exists
+for. `bcc:` is not searchable at all; that gap is accepted rather than worked
+around.
+
+Metadata only: subject, snippet, participants, message count, last message
+date, unread. Message bodies are never fetched or stored beyond the snippet
+Gmail itself returns.
+
+**Each person sees only their own mail.** A teammate's threads with the same POC
+never appear, even on the same deal. That is intended, not a limitation to
+engineer around — pooling would mean one person's consent exposing their mailbox
+to the whole team.
+
+### The states the panel renders
+
+`disabled` · `not_signed_in` · `no_poc_email` · `not_connected` ·
+`needs_reconnect` · `empty` · `ok` · `error`
+
+The server decides which applies and the panel renders it, so the two cannot
+drift. A Gmail outage — a 401, a revoked grant, Google being down — never blocks
+the drawer or the board: the panel sits behind an error boundary as well.
+
 ## Troubleshooting a deployment
 
 See `WHITE-SCREEN-RUNBOOK.md` for the full playbook on blank-page failures under

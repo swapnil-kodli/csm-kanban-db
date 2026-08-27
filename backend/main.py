@@ -8,6 +8,9 @@ from fastapi import APIRouter, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlmodel import Session, select
 
+from typing import Optional
+
+from auth import auth_enabled, current_user
 from db import engine, get_session, init_db
 from models import User
 from engines import alerts as alert_engine
@@ -84,17 +87,24 @@ def health_check():
 
 
 @api.get("/me")
-def me(session: Session = Depends(get_session)):
-    user = session.exec(select(User)).first()
+def me(user: Optional[User] = Depends(current_user)):
+    """Who is asking. Null when sign-in is on and nobody is signed in.
+
+    With AUTH_ENABLED off this answers with the single bootstrap CSM, which is
+    what every demo and every existing deployment expects.
+    """
     if user is None:
-        return {"user": None}
+        return {"user": None, "auth_enabled": auth_enabled()}
     return {
+        "auth_enabled": auth_enabled(),
         "user": {
             "id": user.id,
             "name": user.name,
             "initials": user.initials,
             "avatar_color": user.avatar_color,
-        }
+            "email": user.email,
+            "avatar_url": user.avatar_url,
+        },
     }
 
 

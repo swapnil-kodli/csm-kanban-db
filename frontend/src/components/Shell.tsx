@@ -28,11 +28,16 @@ interface TopBarProps {
   onNewClient: () => void;
   onNewDeal: () => void;
   trashCount: number;
+  /** Live board columns, so the Column filter cannot go stale. */
+  columns: FilterColumn[];
 }
+
+/** Only what the filter chip needs — the immutable key and its current label. */
+export interface FilterColumn { key: string; title: string }
 
 export function TopBar({
   user, source, groupBy, filters, searchRef, onGroupBy, onFilters, onOpenPalette, onNewTask,
-  onNewClient, onNewDeal, trashCount,
+  onNewClient, onNewDeal, trashCount, columns,
 }: TopBarProps) {
   const [panelOpen, setPanelOpen] = useState(false);
   const activeCount = countFilters(filters);
@@ -100,7 +105,7 @@ export function TopBar({
             Filters{activeCount ? ` · ${activeCount}` : ""}
           </button>
           {panelOpen && (
-            <FilterPanel filters={filters} onFilters={onFilters} onClose={() => setPanelOpen(false)} />
+            <FilterPanel filters={filters} columns={columns} onFilters={onFilters} onClose={() => setPanelOpen(false)} />
           )}
         </div>
 
@@ -139,15 +144,26 @@ function countFilters(f: Filters): number {
 }
 
 /** Ranked in decision-value order (spec §6). Do not reshuffle alphabetically. */
-function FilterPanel({ filters, onFilters, onClose }: { filters: Filters; onFilters: (f: Filters) => void; onClose: () => void }) {
+function FilterPanel({ filters, columns, onFilters, onClose }: { filters: Filters; columns: FilterColumn[]; onFilters: (f: Filters) => void; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
     }
+    // Escape closes it too. Every other overlay in the app does — the drawer,
+    // the palette, every dialog — so a panel that ignores it reads as stuck,
+    // and the next click gets spent dismissing it instead of doing what was
+    // intended.
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") { e.stopPropagation(); onClose(); }
+    }
     document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocClick);
+      document.removeEventListener("keydown", onKey);
+    };
   }, [onClose]);
 
   function toggleIn<K extends keyof Filters>(key: K, value: string) {
@@ -198,11 +214,17 @@ function FilterPanel({ filters, onFilters, onClose }: { filters: Filters; onFilt
         </div>
       </Group>
 
+      {/* Columns are user-defined since v3a, so this list comes from the board
+          rather than the five keys the product shipped with. Hardcoded, it
+          offered filters for columns that had been renamed or deleted and
+          silently omitted every column someone added. Filters store the
+          immutable key, so a rename never breaks a shared URL. */}
       <Group label="5 · Column">
         <div className="popover-chips">
-          {["ready_for_onboarding", "onboarding", "working", "approval", "launch"].map((c) => (
-            <button key={c} type="button" className="chip" aria-pressed={filters.columns?.includes(c) ?? false} onClick={() => toggleIn("columns", c)}>
-              {c.replace(/_/g, " ")}
+          {columns.length === 0 && <span className="panel-muted">No columns configured</span>}
+          {columns.map((c) => (
+            <button key={c.key} type="button" className="chip" aria-pressed={filters.columns?.includes(c.key) ?? false} onClick={() => toggleIn("columns", c.key)}>
+              {c.title}
             </button>
           ))}
         </div>

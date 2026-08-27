@@ -28,6 +28,35 @@ const INJECTED_ROOT = (import.meta.env.VITE_API_URL || "").trim().replace(/\/+$/
 const API_ROOT = detectMountPrefix() || INJECTED_ROOT;
 const API_BASE = `${API_ROOT}/api`;
 
+/**
+ * An absolute, same-origin URL for a full-page navigation — OAuth, where the
+ * browser leaves the app and Google sends it back.
+ *
+ * This exists because `href="../api/google/authorize"` does NOT work: a
+ * relative URL resolves against the current document, so under the marketplace
+ * mount `/p/{slug}/` it becomes `/p/api/google/authorize` — a path that does
+ * not exist. It only ever appeared correct because it happens to resolve to
+ * `/api/...` at the root.
+ *
+ * `app_base` matters for the same reason: it is where the server sends the
+ * browser after consent, and hardcoding "/" dumps a marketplace user out of
+ * their app onto the host root.
+ */
+export function appUrl(path: string): string {
+  const base = API_ROOT || "";
+  return `${base}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
+/** The mount path the app is served under, with its trailing slash. */
+export function appBase(): string {
+  return `${API_ROOT || ""}/`;
+}
+
+/** A full-page OAuth navigation that comes back to THIS mount. */
+export function oauthUrl(endpoint: "login" | "authorize"): string {
+  return appUrl(`/api/google/${endpoint}?app_base=${encodeURIComponent(appBase())}`);
+}
+
 export function apiDiagnostics() {
   return {
     apiBase: API_BASE,

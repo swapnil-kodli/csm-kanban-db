@@ -571,6 +571,7 @@ export default function App() {
         onNewClient={() => setNewCompanyOpen(true)}
         onNewDeal={() => setNewDealFor("")}
         trashCount={trashDeals.length + trashCompanies.length}
+        columns={board?.columns.map((c) => ({ key: c.key, title: c.title })) ?? []}
       />
 
       {degraded && <DegradedBanner onRetry={() => refresh()} />}

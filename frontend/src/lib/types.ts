@@ -336,17 +336,21 @@ export interface EmailThread {
 }
 
 export type EmailThreadState =
+  | "disabled"          // GMAIL_ENABLED is off
+  | "not_signed_in"     // auth is on, nobody signed in — threads are per person
+  | "no_poc_email"      // this deal's POC has no address
+  | "not_connected"     // this user has not granted gmail.readonly
+  | "needs_reconnect"   // revoked, expired, or the stored token is unreadable
+  | "empty"             // connected and searched; no correspondence yet
   | "ok"
-  | "disabled"
-  | "not_connected"
-  | "no_poc_email"
-  | "token_expired"
   | "error";
 
 export interface EmailThreadsResponse {
   state: EmailThreadState;
   threads: EmailThread[];
   detail?: string;
+  /** The address actually searched, so "no correspondence" can name it. */
+  poc_email?: string;
 }
 
 export interface DealDetail {

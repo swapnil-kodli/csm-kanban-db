@@ -1,6 +1,6 @@
 import { Component, useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { apiGet } from "../lib/api";
+import { apiGet, oauthUrl } from "../lib/api";
 import { relativeDate } from "../lib/format";
 import type { EmailThreadsResponse, EmailThread } from "../lib/types";
 
@@ -52,28 +52,59 @@ export function EmailThreadsPanel({
 
   if (!data) return <p className="panel-muted">Loading threads…</p>;
 
-  // Four states, each rendered cleanly — none of them an exception.
+  /* Every state the server can report, each rendered as a real answer rather
+     than as a failure to load. The server decides which one applies; this only
+     renders it, so the two cannot drift apart.
+
+     The Connect/Reconnect links are full-page navigations built with oauthUrl()
+     — NOT relative hrefs. A relative "../api/..." resolves against the current
+     document and breaks under the marketplace's /p/{slug}/ mount. */
   if (data.state === "disabled")
     return <p className="panel-muted">Gmail integration is turned off.</p>;
-  if (data.state === "not_connected")
+  if (data.state === "not_signed_in")
     return (
-      <a className="btn btn-sm" href="../api/google/authorize?app_base=/">
-        Connect Gmail
-      </a>
+      <div className="panel-muted">
+        <p>Threads are per person — sign in to see your own correspondence.</p>
+        <a className="btn btn-sm" href={oauthUrl("login")}>Sign in with Google</a>
+      </div>
     );
   if (data.state === "no_poc_email")
-    return <p className="panel-muted">Add a POC email to see threads.</p>;
-  if (data.state === "token_expired" || data.state === "error")
+    return (
+      <p className="panel-muted">
+        This deal's POC has no email address, so there is nothing to search for.
+        Add one in Overview.
+      </p>
+    );
+  if (data.state === "not_connected")
+    return (
+      <div className="panel-muted">
+        <p>
+          Connect Gmail to see your correspondence with this POC. Read-only, and
+          only your own mail — a teammate's threads never appear here.
+        </p>
+        <a className="btn btn-sm" href={oauthUrl("authorize")}>Connect Gmail</a>
+      </div>
+    );
+  if (data.state === "needs_reconnect")
+    return (
+      <div className="panel-error">
+        <span>{data.detail || "Gmail access has lapsed."}</span>
+        <a className="btn btn-sm" href={oauthUrl("authorize")}>Reconnect</a>
+      </div>
+    );
+  if (data.state === "error")
     return (
       <div className="panel-error">
         <span>{data.detail || "Gmail could not be reached."}</span>
-        <a className="btn btn-sm" href="../api/google/authorize?app_base=/">
-          Reconnect
-        </a>
+        <a className="btn btn-sm" href={oauthUrl("authorize")}>Reconnect</a>
       </div>
     );
-  if (data.threads.length === 0)
-    return <p className="panel-muted">No threads with this POC yet.</p>;
+  if (data.state === "empty" || data.threads.length === 0)
+    return (
+      <p className="panel-muted">
+        No correspondence with {data.poc_email ?? "this POC"} yet.
+      </p>
+    );
 
   return (
     <ul className="thread-list">

@@ -12,6 +12,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
+from auth import current_user
 from db import get_session
 from dbtypes import utcnow
 from keygen import next_deal_key
@@ -552,14 +553,17 @@ def get_deal(deal_id: str, session: Session = Depends(get_session)):
 
 @router.get("/{deal_id}/email-threads")
 def email_threads(
-    deal_id: str, limit: int = 20, session: Session = Depends(get_session)
+    deal_id: str,
+    limit: int = 20,
+    session: Session = Depends(get_session),
+    user: Optional[User] = Depends(current_user),
 ):
     """Always 200 with a state the panel can render. A Gmail outage must never
     block the drawer from opening or the board from rendering."""
     from routers.google import fetch_threads
 
     deal = _get(session, deal_id)
-    return fetch_threads(session, deal, limit)
+    return fetch_threads(session, deal, user, limit)
 
 
 @router.patch("/{deal_id}")
