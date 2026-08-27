@@ -34,12 +34,19 @@ export type TaskBucket = "today" | "this_week" | "follow_up" | "waiting" | "done
  * Everything else here is board mechanics or grouping input — never rendered
  * on the card itself.
  */
-export interface AccountCard {
-  kind: "account";
+export type Outcome = "active" | "completed" | "lost";
+
+export interface DealCard {
+  kind: "deal";
   id: string;
-  account_id: string;
+  deal_id: string;
+  /** The DEAL's key and name — PRE-04-01, not the company's. */
   key: string;
   name: string;
+  /** The company chip. Opens the company view; never the card's main label. */
+  company_id: string;
+  company_key: string | null;
+  company_name: string;
   mode: Mode;
   mode_label: string;
   workstream: Workstream;
@@ -62,6 +69,7 @@ export interface AccountCard {
   column_stalled: boolean;
   client_type: ClientType;
   quoted_total: number;
+  outcome: Outcome;
   lane?: string;
   lane_title?: string;
 }
@@ -69,7 +77,7 @@ export interface AccountCard {
 export interface TaskCard {
   kind: "task";
   id: string;
-  account_id: string;
+  deal_id: string;
   title: string;
   type: string;
   type_label: string;
@@ -85,7 +93,7 @@ export interface TaskCard {
   rule_key: string | null;
   sort_index: number;
   completed_at: string | null;
-  account: { id: string; key: string; name: string; health_band: HealthBand };
+  deal: { id: string; key: string; name: string; health_band: HealthBand };
 }
 
 export interface BoardColumn {
@@ -97,7 +105,7 @@ export interface BoardColumn {
   position: number;
   count: number;
   total_quoted: number;
-  cards: AccountCard[];
+  cards: DealCard[];
   droppable: boolean;
   is_default_entry: boolean;
   stalled_after_days: number | null;
@@ -116,20 +124,18 @@ export interface BoardResponse {
   swimlanes: Swimlane[];
   /** Post-filter. Zero here does not mean the book is empty — see book_size. */
   total_cards: number;
-  /** Unfiltered live clients. Separates "no clients yet" from "no matches". */
+  /** Unfiltered active deals. Separates "no deals yet" from "no matches". */
   book_size: number;
   archived_count: number;
+  /** How many clients this book of work spans. */
+  company_count: number;
 }
 
-/** The four required fields, then everything the drawer could also fill in. */
-export interface NewClientInput {
+/** A client organisation. Two required fields; the work belongs to a Deal. */
+export interface NewCompanyInput {
   name: string;
-  mode: Mode;
   client_type: ClientType;
-  workstream: Workstream;
   city?: string;
-  comm_modes?: CommMode[];
-  quoted_total?: number;
   primary_contact_name?: string;
   primary_contact_role?: string;
   primary_contact_email?: string;
@@ -137,12 +143,67 @@ export interface NewClientInput {
 }
 
 /**
- * A soft-deleted client, as Trash shows it. Deliberately not an AccountCard:
- * an archived client has no attention score, no size band and no stall state,
- * because those describe a live book. What matters here is identity plus the
- * weight of what a hard delete would destroy.
+ * An engagement. `company_id` and `poc_id` are both required, and the POC must
+ * be a contact of that company — the picker only offers those, and the server
+ * rejects anything else regardless.
  */
-export interface TrashRow {
+export interface NewDealInput {
+  company_id: string;
+  poc_id: string;
+  name: string;
+  mode: Mode;
+  workstream: Workstream;
+  comm_modes?: CommMode[];
+  quoted_total?: number;
+}
+
+export interface CompanyContact {
+  id: string;
+  name: string;
+  role: string;
+  email: string | null;
+  phone: string | null;
+  is_primary: boolean;
+  is_champion: boolean;
+  is_economic_buyer: boolean;
+  status: "active" | "departed";
+  /** Whether this contact is POC on any deal, and which — the UI explains why
+   *  deleting is refused before someone tries it. */
+  is_poc: boolean;
+  poc_on: string[];
+}
+
+/** Worst active band with its count. Null band = no active deals at all. */
+export interface HealthRollup {
+  band: HealthBand | null;
+  band_label: string | null;
+  dot: string | null;
+  worst_count: number;
+  active_count: number;
+}
+
+export interface CompanySummary {
+  id: string;
+  key: string;
+  name: string;
+  city: string | null;
+  client_type: ClientType;
+  client_type_label: string;
+  tags: string[];
+  archived_at: string | null;
+  health: HealthRollup;
+  last_contact_at: string | null;
+  counts: { active: number; completed: number; lost: number };
+  total_deals: number;
+  quoted_total: number;
+  revenue_recognised: number;
+  total_cost: number;
+  gross_margin: number;
+  margin_pct: number | null;
+  owner?: { id: string; name: string; initials: string } | null;
+}
+
+export interface CompanyDealRow {
   id: string;
   key: string;
   name: string;
@@ -150,11 +211,62 @@ export interface TrashRow {
   mode_label: string;
   workstream: Workstream;
   workstream_label: string;
-  client_type_label: string;
   column_label: string;
+  column_color: string;
+  outcome: Outcome;
+  outcome_label: string;
+  outcome_at: string | null;
+  outcome_reason: string | null;
+  /** Null on anything not active — a band frozen at close describes nothing. */
+  health_band: HealthBand | null;
+  health_score: number | null;
+  quoted_total: number;
+  revenue_recognised: number;
+  margin_pct: number | null;
+  poc: { id: string; name: string; email: string | null } | null;
+  last_contact_at: string | null;
+}
+
+export interface CompanyDetail {
+  company: CompanySummary;
+  deals: Record<Outcome, CompanyDealRow[]>;
+  contacts: CompanyContact[];
+}
+
+/**
+ * A soft-deleted deal, as Trash shows it. Deliberately not a DealCard: an
+ * archived deal has no attention score, no size band and no stall state,
+ * because those describe live work. What matters here is identity plus the
+ * weight of what a hard delete would destroy.
+ */
+export interface DealTrashRow {
+  id: string;
+  key: string;
+  name: string;
+  company_id: string;
+  company_name: string;
+  mode: Mode;
+  mode_label: string;
+  workstream: Workstream;
+  workstream_label: string;
+  column_label: string;
+  outcome: Outcome;
   archived_at: string | null;
   quoted_total: number;
-  owns: { contacts: number; tasks: number; snapshots: number; risks: number };
+  owns: { tasks: number; snapshots: number; risks: number };
+  restorable: boolean;
+}
+
+/** A soft-deleted company. Deleting one takes its deals down with it. */
+export interface CompanyTrashRow {
+  id: string;
+  key: string;
+  name: string;
+  client_type_label: string;
+  city: string | null;
+  archived_at: string | null;
+  quoted_total: number;
+  owns: { deals: number; contacts: number; tasks: number };
   restorable: boolean;
 }
 
@@ -237,13 +349,36 @@ export interface EmailThreadsResponse {
   detail?: string;
 }
 
-export interface AccountDetail {
-  card: AccountCard;
-  account: {
+export interface DealDetail {
+  card: DealCard;
+  /** The client. Read-only in the drawer — company fields are edited on the
+   *  company view, in one place, or the two drift. */
+  company: {
     id: string;
     key: string;
     name: string;
     city: string | null;
+    client_type: ClientType;
+    client_type_label: string;
+    tags: string[];
+  } | null;
+  /** This deal's own POC. The Gmail panel keys off their address. */
+  poc: {
+    id: string;
+    name: string;
+    role: string;
+    email: string | null;
+    phone: string | null;
+  } | null;
+  deal: {
+    id: string;
+    key: string;
+    name: string;
+    company_id: string;
+    poc_id: string;
+    outcome: Outcome;
+    outcome_at: string | null;
+    outcome_reason: string | null;
     column_id: string;
     column_key: string | null;
     column_label: string;
@@ -255,10 +390,7 @@ export interface AccountDetail {
     workstream_glyph: string;
     mode: Mode;
     mode_label: string;
-    client_type: ClientType;
-    client_type_label: string;
     size_band: string;
-    tags: string[];
     pinned: boolean;
     owner: { id: string; name: string; initials: string } | null;
     handoff_received_at: string | null;

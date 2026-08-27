@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Search, SlidersHorizontal, Plus, AlertTriangle, X, Settings as Gear, Trash2, Building2 } from "lucide-react";
+import { Search, SlidersHorizontal, Plus, AlertTriangle, X, Settings as Gear, Trash2, Building2, Briefcase } from "lucide-react";
 import { Link } from "react-router-dom";
 import type { Filters, GroupBy, Metric } from "../lib/types";
 import { formatINR } from "../lib/format";
@@ -26,12 +26,13 @@ interface TopBarProps {
   onOpenPalette: () => void;
   onNewTask: () => void;
   onNewClient: () => void;
+  onNewDeal: () => void;
   trashCount: number;
 }
 
 export function TopBar({
   user, source, groupBy, filters, searchRef, onGroupBy, onFilters, onOpenPalette, onNewTask,
-  onNewClient, trashCount,
+  onNewClient, onNewDeal, trashCount,
 }: TopBarProps) {
   const [panelOpen, setPanelOpen] = useState(false);
   const activeCount = countFilters(filters);
@@ -54,7 +55,7 @@ export function TopBar({
         <input
           ref={searchRef}
           type="text"
-          placeholder="Search accounts, contacts, tasks…"
+          placeholder="Search clients, deals, contacts, tasks…"
           aria-label="Search"
           onFocus={onOpenPalette}
           readOnly
@@ -108,9 +109,17 @@ export function TopBar({
           Task
         </button>
 
-        <button type="button" className="btn primary" onClick={onNewClient} title="New client">
+        <button type="button" className="btn" onClick={onNewClient} title="New client">
           <Building2 size={14} strokeWidth={2.4} />
           Client
+        </button>
+
+        {/* The primary action is a DEAL, not a client. A client with no deal
+            shows nothing anywhere, so opening work is the common case and
+            adding an organisation is the occasional prerequisite. */}
+        <button type="button" className="btn primary" onClick={onNewDeal} title="New deal">
+          <Briefcase size={14} strokeWidth={2.4} />
+          Deal
         </button>
 
         {user && (
@@ -340,7 +349,7 @@ export function QuickFilters({ filters, onFilters }: QuickFiltersProps) {
           className="chip"
           aria-pressed={qf.key === "mine" ? true : isActive(qf.patch)}
           disabled={qf.key === "mine"}
-          title={qf.key === "mine" ? "Single-CSM MVP — every account is yours" : undefined}
+          title={qf.key === "mine" ? "Single-CSM MVP — every client is yours" : undefined}
           onClick={() => qf.key !== "mine" && toggle(qf.patch)}
         >
           {qf.label}

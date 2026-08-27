@@ -37,26 +37,38 @@ _WORD = re.compile(r"[A-Za-z0-9]+")
 
 
 def prefix_for(name: str) -> str:
-    """Initials of the first words, falling back to the leading letters.
+    """Three characters, always. The house style is uniformly three (SBP, PRE,
+    NFS), and a shorter prefix both looks wrong beside them and collides far
+    sooner — two-letter prefixes exhaust their -01..-99 range across a book
+    much faster than three-letter ones.
 
-    "Sunbeam Retail Partners" -> SRP
-    "Sunbeam"                 -> SUN   (one word: take its first letters)
-    "3M"                      -> 3M    (short, but unambiguous; padded below)
-    ""                        -> CLI
+    Three cases, because two words is the common one and initials alone are too
+    thin for it:
+
+      3+ words   initials of the first three     Next Foot Steps      -> NFS
+      2 words    two letters of the first, then  Brick Mentor         -> BRM
+                 one of the second               Square Yards         -> SQY
+      1 word     its first three letters         Prestige             -> PRE
+
+    Padded from a fallback when the name is too short to yield three, so the
+    output length never varies.
+
+      "3M"  -> 3MC        "" -> CLI
     """
     words = _WORD.findall(name or "")
     if not words:
         return FALLBACK_PREFIX
 
-    if len(words) >= 2:
+    if len(words) >= 3:
         candidate = "".join(w[0] for w in words[:PREFIX_LEN])
+    elif len(words) == 2:
+        candidate = words[0][:2] + words[1][0]
     else:
         candidate = words[0][:PREFIX_LEN]
 
     candidate = candidate.upper()
-    if len(candidate) < 2:
-        candidate = (candidate + FALLBACK_PREFIX)[:PREFIX_LEN]
-    return candidate
+    # Never shorter than three: pad rather than emit a stubby prefix.
+    return (candidate + FALLBACK_PREFIX)[:PREFIX_LEN]
 
 
 def _taken_company_keys(session: Session) -> set[str]:

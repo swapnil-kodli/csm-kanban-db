@@ -30,10 +30,10 @@ export class EmailThreadsBoundary extends Component<
 }
 
 export function EmailThreadsPanel({
-  accountId,
+  dealId,
   onMarkContacted,
 }: {
-  accountId: string;
+  dealId: string;
   /** A thread is evidence of contact; its date sets `last_contact_at`. */
   onMarkContacted: (iso: string) => void;
 }) {
@@ -42,13 +42,13 @@ export function EmailThreadsPanel({
 
   useEffect(() => {
     let live = true;
-    apiGet<EmailThreadsResponse>(`/accounts/${accountId}/email-threads`)
+    apiGet<EmailThreadsResponse>(`/deals/${dealId}/email-threads`)
       .then((d) => live && setData(d))
       .catch(() => live && setData({ state: "error", threads: [] }));
     return () => {
       live = false;
     };
-  }, [accountId]);
+  }, [dealId]);
 
   if (!data) return <p className="panel-muted">Loading threads…</p>;
 

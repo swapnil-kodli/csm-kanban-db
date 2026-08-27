@@ -2,9 +2,9 @@ import { DndContext, DragOverlay, PointerSensor, KeyboardSensor, useSensor, useS
 import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
 import { useDroppable } from "@dnd-kit/core";
 import { useMemo, useState } from "react";
-import { AccountCardView } from "./Cards";
+import { DealCardView } from "./Cards";
 import { formatINR } from "../lib/format";
-import type { AccountCard, BoardResponse, GroupBy } from "../lib/types";
+import type { DealCard, BoardResponse, GroupBy } from "../lib/types";
 
 function Column({
   colKey,
@@ -23,7 +23,7 @@ function Column({
   count: number;
   totalQuoted: number;
   isEntry: boolean;
-  cards: AccountCard[];
+  cards: DealCard[];
   selectedId: string | null;
   onOpen: (id: string) => void;
 }) {
@@ -41,7 +41,7 @@ function Column({
         className={`col-body ${isOver ? "drop-target" : ""} ${isEntry ? "col-handoff" : ""}`}
       >
         {cards.map((card) => (
-          <AccountCardView
+          <DealCardView
             key={card.id}
             card={card}
             selected={card.id === selectedId}
@@ -71,7 +71,7 @@ export function Board({
   onOpen: (id: string) => void;
   onMove: (cardId: string, toColumn: string) => void;
 }) {
-  const [dragging, setDragging] = useState<AccountCard | null>(null);
+  const [dragging, setDragging] = useState<DealCard | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     // Keyboard drag path: Space to grab, arrows to move, Space to drop.
@@ -152,7 +152,7 @@ export function Board({
       </div>
       <DragOverlay dropAnimation={null}>
         {dragging && (
-          <div className="card card-account card-drag-ghost">
+          <div className="card card-deal card-drag-ghost">
             <header className="card-head">
               <span className={`health-dot dot-${dragging.health_dot}`} />
               <h3 className="card-title">{dragging.name}</h3>

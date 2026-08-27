@@ -534,7 +534,7 @@ input, select, textarea { font: inherit; color: inherit; }
    saturated channel; mode and workstream are monochrome.
    ============================================================ */
 
-.card-account { display: flex; flex-direction: column; gap: 7px; }
+.card-deal { display: flex; flex-direction: column; gap: 7px; }
 
 .card-mode { display: flex; gap: 6px; align-items: center; }
 
@@ -869,3 +869,105 @@ input, select, textarea { font: inherit; color: inherit; }
 .lane-count { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 
 .skeleton-title { height: 11px; width: 42%; margin-bottom: 9px; }
+
+/* ---------- Company \/ Deal split ------------------------------------------ */
+
+/* The client, under the deal name. Secondary weight on purpose: the card's
+   primary label is the engagement, and the company is context for it. */
+.card-company {
+  margin: -3px 0 0 16px; font-size: 11px; color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* An inline control that opens the company view. Reads as text, behaves as a
+   button — the alternative, a full .btn inside a chip row, would compete with
+   the header's own actions. */
+.chip-link, .link-chip {
+  border: 1px solid var(--border-strong); background: var(--surface);
+  color: var(--text); cursor: pointer; font: inherit;
+}
+.chip-link:hover, .link-chip:hover { border-color: var(--accent); }
+.link-chip {
+  border-radius: var(--radius-sm); padding: 5px 9px; font-size: 12px; font-weight: 600;
+  text-align: left;
+}
+.field-sub { display: block; margin-top: 4px; font-size: 11px; color: var(--text-3); }
+
+/* Outcome. Completed is quiet; lost borrows the critical channel, because a
+   lost deal is the one board state that should stop the eye. */
+.chip-completed { background: var(--accent-soft); color: var(--text-2); border-color: transparent; }
+.chip-lost, .chip-danger { color: var(--h-critical); border-color: var(--h-critical); }
+.chip-danger[aria-pressed="true"] { background: var(--h-critical); border-color: var(--h-critical); color: #fff; }
+
+/* ---------- company detail view ---------- */
+
+.company { max-width: 900px; margin: 0 auto; padding: 22px 0 56px; display: flex; flex-direction: column; gap: 22px; }
+.company-back { align-self: flex-start; }
+
+.company-head { display: flex; flex-direction: column; gap: 9px; }
+.company-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 9px; }
+.company-title h2 { font-size: 20px; font-weight: 800; margin: 0; }
+
+.company-health { display: flex; align-items: center; gap: 7px; font-size: 13px; }
+.company-health-count { color: var(--text-2); font-size: 12.5px; }
+
+.company-stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1px;
+  background: var(--border); border: 1px solid var(--border); border-radius: var(--radius);
+  overflow: hidden;
+}
+.company-stat { background: var(--surface); padding: 13px 15px; display: flex; flex-direction: column; gap: 2px; }
+.company-stat-value { font-size: 17px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.company-stat-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: var(--text-2); }
+.company-stat-sub { font-size: 11px; color: var(--text-3); }
+
+.company-section { display: flex; flex-direction: column; gap: 11px; }
+.company-section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.company-section-head h3 { font-size: 13px; font-weight: 700; margin: 0; }
+
+/* Deals grouped by outcome — the shape of the relationship, not a flat list. */
+.deal-group { display: flex; flex-direction: column; gap: 7px; margin-bottom: 14px; }
+.deal-group-head {
+  display: flex; align-items: center; gap: 7px; margin: 0;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+  color: var(--text-2);
+}
+.deal-group-count { font-weight: 600; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.deal-group-head.outcome-lost { color: var(--h-critical); }
+
+.deal-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.deal-row {
+  display: grid; gap: 4px; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface);
+}
+/* Closed deals recede rather than disappear: history is the point of this view,
+   but it must not read as live work. */
+.deal-row.outcome-completed, .deal-row.outcome-lost { background: var(--surface-2); }
+.deal-row.outcome-lost { border-left: 2px solid var(--h-critical); }
+
+.deal-open {
+  display: flex; align-items: baseline; gap: 8px; padding: 0; border: 0;
+  background: none; cursor: pointer; font: inherit; text-align: left;
+}
+.deal-name { font-size: 13px; font-weight: 700; color: var(--text); }
+.deal-open:hover .deal-name { text-decoration: underline; text-underline-offset: 2px; }
+.deal-meta { display: flex; flex-wrap: wrap; gap: 5px; font-size: 11.5px; color: var(--text-2); }
+.deal-numbers { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.deal-outcome-note { margin: 3px 0 0; font-size: 11.5px; color: var(--text-3); line-height: 1.45; }
+
+.company-contacts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.company-contacts .contact {
+  display: grid; grid-template-columns: 1fr auto auto auto; align-items: center; gap: 10px;
+  padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius);
+}
+.company-contacts .contact.primary { border-color: var(--border-strong); }
+.contact-id { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.contact-name { font-size: 12.5px; font-weight: 700; }
+.contact-role { font-size: 11px; color: var(--text-3); }
+.contact-reach { display: flex; flex-direction: column; gap: 1px; font-size: 11.5px; color: var(--text-2); }
+.company-contacts .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.trash-group {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+  color: var(--text-2); margin: 6px 0 -2px;
+}

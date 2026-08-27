@@ -1,32 +1,38 @@
 import { useDraggable } from "@dnd-kit/core";
-import type { AccountCard, TaskCard } from "../lib/types";
+import type { DealCard, TaskCard } from "../lib/types";
 
 /**
- * The v2 card carries exactly four things:
+ * The card carries exactly four things:
  *   1. name (+ key)   2. pilot/customer   3. workstream   4. health status
  *
- * Nothing else belongs here. Quoted value, margin, POC, renewal, next action,
- * badges — all of it lives in the drawer. An over-stuffed card stops being
- * scannable, which is the failure mode the research is most emphatic about.
- * Resist adding a fifth thing.
+ * Nothing else belongs here. Quoted value, margin, POC, next action, badges —
+ * all of it lives in the drawer. An over-stuffed card stops being scannable,
+ * which is the failure mode the research is most emphatic about. Resist adding
+ * a fifth thing.
+ *
+ * Since the split the card is a DEAL. The company name rides along the title as
+ * secondary text rather than as a fifth field: with two engagements for one
+ * client, the deal names alone can be ambiguous, and the alternative — putting
+ * the company on its own line — is exactly the fifth thing this comment warns
+ * against.
  */
-export function AccountCardView({
+export function DealCardView({
   card,
   selected,
   onOpen,
 }: {
-  card: AccountCard;
+  card: DealCard;
   selected: boolean;
   onOpen: (id: string) => void;
 }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: card.id,
-    data: { kind: "account", column_id: card.column_id },
+    data: { kind: "deal", column_id: card.column_id },
   });
 
   const classes = [
     "card",
-    "card-account",
+    "card-deal",
     card.handoff ? "card-handoff" : "",
     card.stalled_handoff || card.column_stalled ? "card-stalled" : "",
     selected ? "card-selected" : "",
@@ -43,21 +49,27 @@ export function AccountCardView({
       {...listeners}
       role="button"
       tabIndex={0}
-      aria-label={`${card.name}, ${card.mode_label}, ${card.workstream_label}, health ${card.health_band_label} ${card.health_score}`}
-      onClick={() => onOpen(card.account_id)}
+      aria-label={`${card.name} for ${card.company_name}, ${card.mode_label}, ${card.workstream_label}, health ${card.health_band_label} ${card.health_score}`}
+      onClick={() => onOpen(card.deal_id)}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          onOpen(card.account_id);
+          onOpen(card.deal_id);
         }
       }}
     >
-      {/* 1. health dot + name + key */}
+      {/* 1. health dot + name + key, with the client underneath */}
       <header className="card-head">
         <span className={`health-dot dot-${card.health_dot}`} aria-hidden="true" />
         <h3 className="card-title">{card.name}</h3>
         <span className="card-key">{card.key}</span>
       </header>
+      {/* Only when it adds something. A deal named after its client — which is
+          what every migrated deal starts as — would otherwise print the same
+          words twice. */}
+      {card.company_name !== card.name && (
+        <p className="card-company">{card.company_name}</p>
+      )}
 
       {/* 2. pilot / customer */}
       <div className="card-mode">

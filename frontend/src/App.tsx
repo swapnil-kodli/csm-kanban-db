@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import type {
-  AccountCard, AccountDetail, BoardResponse, Filters, GroupBy,
-  HealthBand, Metric, NewClientInput, TaskBucket, TaskPriority, TaskType, TrashRow,
+  BoardResponse, CompanyContact, CompanyDetail, CompanySummary, CompanyTrashRow,
+  DealCard, DealDetail, DealTrashRow, Filters, GroupBy, HealthBand, Metric,
+  NewCompanyInput, NewDealInput, Outcome, TaskBucket, TaskPriority, TaskType,
 } from "./lib/types";
 import { apiDelete, apiGet, apiPatch, apiPost, getSource, onSourceChange, qs } from "./lib/api";
 import type { SourceState } from "./lib/api";
@@ -12,7 +13,9 @@ import { Drawer } from "./components/Drawer";
 import { NewTaskDialog } from "./components/NewTaskDialog";
 import { CommandPalette, OverrideDialog } from "./components/Palette";
 import { Settings } from "./components/Settings";
-import { NewClientDialog } from "./components/NewClientDialog";
+import { NewCompanyDialog } from "./components/NewCompanyDialog";
+import { NewDealDialog } from "./components/NewDealDialog";
+import { CompanyView } from "./components/CompanyView";
 import { Trash } from "./components/Trash";
 
 const GROUP_KEY = "signal-cs:group-by";
@@ -58,6 +61,10 @@ export default function App() {
   const path = location.pathname.replace(/\/+$/, "");
   const onSettings = path.endsWith("/settings");
   const onTrash = path.endsWith("/trash");
+  // /c/{id} — the company detail view. Matched off the path rather than with
+  // <Routes> to stay consistent with how settings and trash already work here.
+  const companyRoute = path.match(/\/c\/([^/]+)$/);
+  const openCompanyId = companyRoute ? companyRoute[1] : null;
 
 
   /**
@@ -96,15 +103,19 @@ export default function App() {
   const [source, setSource] = useState<SourceState>(getSource());
   const [toasts, setToasts] = useState<Toast[]>([]);
 
-  const [openAccountId, setOpenAccountId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<AccountDetail | null>(null);
+  const [openDealId, setOpenDealId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<DealDetail | null>(null);
+  const [companyDetail, setCompanyDetail] = useState<CompanyDetail | null>(null);
+  const [companies, setCompanies] = useState<CompanySummary[]>([]);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [newTaskFor, setNewTaskFor] = useState<string | null>(null);
-  const [overrideFor, setOverrideFor] = useState<{ accountId: string; band: HealthBand | null } | null>(null);
+  const [overrideFor, setOverrideFor] = useState<{ dealId: string; band: HealthBand | null } | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [newClientOpen, setNewClientOpen] = useState(false);
+  const [newCompanyOpen, setNewCompanyOpen] = useState(false);
+  const [newDealFor, setNewDealFor] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [trash, setTrash] = useState<TrashRow[]>([]);
+  const [trashDeals, setTrashDeals] = useState<DealTrashRow[]>([]);
+  const [trashCompanies, setTrashCompanies] = useState<CompanyTrashRow[]>([]);
 
   const searchRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLInputElement>(null);
@@ -143,28 +154,39 @@ export default function App() {
 
   /** Trash is loaded alongside the board so the topbar count is never stale. */
   const loadTrash = useCallback(async () => {
-    const data = await apiGet<{ accounts: TrashRow[] }>("/accounts/trash/list");
-    setTrash(data.accounts);
+    const [d, c] = await Promise.all([
+      apiGet<{ deals: DealTrashRow[] }>("/deals/trash/list"),
+      apiGet<{ companies: CompanyTrashRow[] }>("/companies/trash/list"),
+    ]);
+    setTrashDeals(d.deals);
+    setTrashCompanies(c.companies);
+  }, []);
+
+  /** The client list, for the New Deal picker and the clients view. */
+  const loadCompanies = useCallback(async () => {
+    const data = await apiGet<{ companies: CompanySummary[] }>("/companies");
+    setCompanies(data.companies);
   }, []);
 
   const refresh = useCallback(async () => {
     try {
-      await Promise.all([loadBoard(), loadMetrics(), loadTrash()]);
+      await Promise.all([loadBoard(), loadMetrics(), loadTrash(), loadCompanies()]);
       setFatal(null);
     } catch (err) {
       setFatal(err instanceof Error ? err.message : "Could not reach the backend");
     }
-  }, [loadBoard, loadMetrics, loadTrash]);
+  }, [loadBoard, loadMetrics, loadTrash, loadCompanies]);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
       try {
-        const [, , , me] = await Promise.all([
+        const [, , , , me] = await Promise.all([
           loadBoard(),
           loadMetrics(),
           loadTrash(),
+          loadCompanies(),
           apiGet<{ user: typeof user }>("/me"),
         ]);
         if (cancelled) return;
@@ -177,72 +199,127 @@ export default function App() {
       }
     })();
     return () => { cancelled = true; };
-  }, [loadBoard, loadMetrics, loadTrash]);
+  }, [loadBoard, loadMetrics, loadTrash, loadCompanies]);
 
   // --- drawer ---------------------------------------------------------------
-  const loadDetail = useCallback(async (accountId: string) => {
+  const loadDetail = useCallback(async (dealId: string) => {
     try {
-      setDetail(await apiGet<AccountDetail>(`/accounts/${accountId}`));
+      setDetail(await apiGet<DealDetail>(`/deals/${dealId}`));
     } catch {
-      toast("Could not load that account", true);
+      toast("Could not load that deal", true);
     }
   }, []);
 
   useEffect(() => {
-    if (!openAccountId) { setDetail(null); return; }
-    loadDetail(openAccountId);
-  }, [openAccountId, loadDetail]);
+    if (!openDealId) { setDetail(null); return; }
+    loadDetail(openDealId);
+  }, [openDealId, loadDetail]);
 
-  const openAccount = useCallback((accountId: string) => setOpenAccountId(accountId), []);
+  const loadCompanyDetail = useCallback(async (companyId: string) => {
+    try {
+      setCompanyDetail(await apiGet<CompanyDetail>(`/companies/${companyId}`));
+    } catch {
+      toast("Could not load that client", true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!openCompanyId) { setCompanyDetail(null); return; }
+    loadCompanyDetail(openCompanyId);
+  }, [openCompanyId, loadCompanyDetail]);
+
+  const openDeal = useCallback((dealId: string) => setOpenDealId(dealId), []);
+  const openCompany = useCallback((companyId: string) => {
+    // Closing the drawer first: the company view is a page, and leaving a
+    // drawer floating over it would leave two things claiming to be in focus.
+    setOpenDealId(null);
+    navigate(`c/${companyId}`);
+  }, [navigate]);
+
+  /** The New Deal picker asks for a company's contacts only once one is chosen. */
+  const contactsFor = useCallback(async (companyId: string) => {
+    const data = await apiGet<CompanyDetail>(`/companies/${companyId}`);
+    return data.contacts as CompanyContact[];
+  }, []);
 
   // --- writes ---------------------------------------------------------------
-  async function addContact(accountId: string) {
+  async function addContact(companyId: string) {
     try {
-      await apiPost("/contacts", { account_id: accountId, name: "New contact", role: "" });
-      await loadDetail(accountId);
+      await apiPost("/contacts", { company_id: companyId, name: "New contact", role: "" });
+      await refreshOpen(companyId);
     } catch {
       toast("Could not add that contact", true);
     }
   }
 
-  async function patchContact(accountId: string, id: string, patch: Record<string, unknown>) {
+  /** Contacts belong to a company but are edited from both views, so both are
+   *  refreshed rather than guessing which one the user is looking at. */
+  async function refreshOpen(companyId?: string) {
+    await Promise.all([
+      openDealId ? loadDetail(openDealId) : Promise.resolve(),
+      companyId ?? openCompanyId
+        ? loadCompanyDetail((companyId ?? openCompanyId) as string)
+        : Promise.resolve(),
+    ]);
+  }
+
+  async function patchContact(id: string, patch: Record<string, unknown>) {
     try {
       await apiPatch(`/contacts/${id}`, patch);
-      await Promise.all([loadDetail(accountId), refresh()]);
+      await Promise.all([refreshOpen(), refresh()]);
     } catch (e) {
       // A 409 here is the primary-contact guard; show what it said.
       toast(e instanceof Error ? e.message : "Could not save that contact", true);
     }
   }
 
-  async function deleteContact(accountId: string, id: string) {
+  async function deleteContact(id: string) {
     try {
       await apiDelete(`/contacts/${id}`);
-      await loadDetail(accountId);
+      await refreshOpen();
     } catch (e) {
+      // A 409 here is the POC guard, and it names the deals — show it verbatim
+      // rather than replacing it with something vaguer.
       toast(e instanceof Error ? e.message : "Could not delete that contact", true);
     }
   }
 
-  async function patchAccount(accountId: string, patch: Record<string, unknown>) {
+  async function patchDeal(dealId: string, patch: Record<string, unknown>) {
     try {
-      await apiPatch(`/accounts/${accountId}`, patch);
-      await Promise.all([loadBoard(), loadDetail(accountId), loadMetrics()]);
-    } catch {
-      toast("Could not save that change", true);
+      await apiPatch(`/deals/${dealId}`, patch);
+      await Promise.all([loadBoard(), loadDetail(dealId), loadMetrics()]);
+    } catch (e) {
+      // A 422 here is the POC invariant. It explains itself; do not swallow it.
+      toast(e instanceof Error ? e.message : "Could not save that change", true);
     }
   }
 
-  async function createClient(input: NewClientInput) {
+  async function setOutcome(dealId: string, outcome: Outcome, reason: string) {
+    try {
+      await apiPost(`/deals/${dealId}/outcome`, { outcome, reason: reason || undefined });
+      toast(
+        outcome === "active"
+          ? "Deal reopened"
+          : `Deal marked ${outcome} — it is off the board and in the client's history`
+      );
+      if (outcome !== "active") setOpenDealId(null);
+      else await loadDetail(dealId);
+      await refresh();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not update that deal", true);
+    }
+  }
+
+  async function createCompany(input: NewCompanyInput) {
     setCreating(true);
     try {
-      const res = await apiPost<{ account: AccountCard }>("/accounts", input);
-      setNewClientOpen(false);
-      toast(`${res.account.name} added as ${res.account.key}`);
+      const res = await apiPost<{ company: CompanySummary }>("/companies", input);
+      setNewCompanyOpen(false);
+      toast(`${res.company.name} added as ${res.company.key}`);
       await refresh();
-      // Open it straight away: the four fields on the card are the minimum, and
-      // the drawer is where the rest of the client actually gets filled in.
-      setOpenAccountId(res.account.account_id);
+      // Straight to the client's own view: a company with no deals shows nothing
+      // on the board, so landing back there would look like nothing happened.
+      openCompany(res.company.id);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Could not create that client", true);
     } finally {
@@ -250,35 +327,72 @@ export default function App() {
     }
   }
 
-  /** Soft delete. Nothing is destroyed; the client moves to Trash. */
-  async function archiveClient(accountId: string, name: string) {
+  async function createDeal(input: NewDealInput) {
+    setCreating(true);
     try {
-      await apiDelete(`/accounts/${accountId}`);
-      setOpenAccountId(null);
+      const res = await apiPost<{ deal: DealCard }>("/deals", input);
+      setNewDealFor(null);
+      toast(`${res.deal.name} added as ${res.deal.key}`);
+      await refresh();
+      // Open it: the four card fields are the minimum, and the drawer is where
+      // the rest of the engagement actually gets filled in.
+      setOpenDealId(res.deal.deal_id);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not create that deal", true);
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  /** Soft delete. Nothing is destroyed; the deal moves to Trash. */
+  async function archiveDeal(dealId: string, name: string) {
+    try {
+      await apiDelete(`/deals/${dealId}`);
+      setOpenDealId(null);
       toast(`${name} moved to Trash`);
       await refresh();
     } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not delete that deal", true);
+    }
+  }
+
+  /** Soft delete, taking the client's deals with it. */
+  async function archiveCompany(companyId: string, name: string) {
+    try {
+      const res = await apiDelete<{ deals_archived: number }>(`/companies/${companyId}`);
+      navigate("..");
+      const n = res.deals_archived;
+      toast(`${name} moved to Trash${n ? ` with ${n} ${n === 1 ? "deal" : "deals"}` : ""}`);
+      await refresh();
+    } catch (e) {
       toast(e instanceof Error ? e.message : "Could not delete that client", true);
     }
   }
 
-  async function restoreClient(row: TrashRow) {
+  type AnyTrashRow =
+    | ({ kind: "deal" } & DealTrashRow)
+    | ({ kind: "company" } & CompanyTrashRow);
+
+  async function restoreTrashed(row: AnyTrashRow) {
+    const base = row.kind === "company" ? "companies" : "deals";
     try {
-      await apiPost(`/accounts/${row.id}/restore`);
-      toast(`${row.name} restored`);
+      const res = await apiPost<{ deals_restored?: number }>(`/${base}/${row.id}/restore`);
+      const n = res.deals_restored;
+      toast(`${row.name} restored${n ? ` with ${n} ${n === 1 ? "deal" : "deals"}` : ""}`);
       await refresh();
     } catch (e) {
-      toast(e instanceof Error ? e.message : "Could not restore that client", true);
+      toast(e instanceof Error ? e.message : "Could not restore that", true);
     }
   }
 
-  async function hardDeleteClient(row: TrashRow, confirmKey: string) {
+  async function hardDeleteTrashed(row: AnyTrashRow, confirmKey: string) {
+    const base = row.kind === "company" ? "companies" : "deals";
     try {
-      await apiPost(`/accounts/${row.id}/hard-delete`, { confirm_key: confirmKey });
+      await apiPost(`/${base}/${row.id}/hard-delete`, { confirm_key: confirmKey });
       toast(`${row.name} deleted permanently`);
       await refresh();
     } catch (e) {
-      toast(e instanceof Error ? e.message : "Could not delete that client", true);
+      toast(e instanceof Error ? e.message : "Could not delete that", true);
     }
   }
 
@@ -295,14 +409,14 @@ export default function App() {
         if (col.id !== columnKey) return { ...col, cards: without, count: without.length };
         const moved = board.columns.flatMap((c) => c.cards).find((c) => c.id === cardId);
         if (!moved) return { ...col, cards: without, count: without.length };
-        const next: AccountCard = { ...moved, column_id: columnKey };
+        const next: DealCard = { ...moved, column_id: columnKey };
         return { ...col, cards: [next, ...without], count: without.length + 1 };
       }),
     });
 
     try {
       // Column only. workstream is a different axis and never moves on drag.
-      await apiPatch(`/accounts/${cardId}`, { column_id: columnKey });
+      await apiPatch(`/deals/${cardId}`, { column_id: columnKey });
       await refresh();
     } catch {
       setBoard(snapshot);
@@ -314,7 +428,7 @@ export default function App() {
   async function toggleTask(taskId: string, done: boolean) {
     try {
       await apiPatch(`/tasks/${taskId}`, { status: done ? "done" : "open" });
-      if (openAccountId) await loadDetail(openAccountId);
+      if (openDealId) await loadDetail(openDealId);
       await refresh();
     } catch {
       toast("Could not update that task", true);
@@ -322,7 +436,7 @@ export default function App() {
   }
 
   async function createTask(
-    accountId: string,
+    dealId: string,
     title: string,
     bucket: TaskBucket,
     due?: string,
@@ -333,10 +447,10 @@ export default function App() {
       // No provenance: that string means "an alert raised this", and a manual
       // task must not claim it.
       await apiPost("/tasks", {
-        account_id: accountId, title, bucket, due_date: due, type, priority,
+        deal_id: dealId, title, bucket, due_date: due, type, priority,
       });
       toast("Task created");
-      if (openAccountId) await loadDetail(openAccountId);
+      if (openDealId) await loadDetail(openDealId);
       await refresh();
     } catch {
       toast("Could not create that task", true);
@@ -346,10 +460,10 @@ export default function App() {
   async function saveOverride(band: HealthBand, reason: string) {
     if (!overrideFor) return;
     try {
-      await apiPost(`/accounts/${overrideFor.accountId}/health-override`, { band, reason });
+      await apiPost(`/deals/${overrideFor.dealId}/health-override`, { band, reason });
       toast("Health override recorded");
       setOverrideFor(null);
-      if (openAccountId) await loadDetail(openAccountId);
+      if (openDealId) await loadDetail(openDealId);
       await refresh();
     } catch {
       toast("Could not save the override", true);
@@ -357,11 +471,11 @@ export default function App() {
   }
 
   async function clearOverride() {
-    if (!openAccountId) return;
+    if (!openDealId) return;
     try {
-      await apiDelete(`/accounts/${openAccountId}/health-override`);
+      await apiDelete(`/deals/${openDealId}/health-override`);
       toast("Override cleared");
-      await Promise.all([loadDetail(openAccountId), refresh()]);
+      await Promise.all([loadDetail(openDealId), refresh()]);
     } catch {
       toast("Could not clear the override", true);
     }
@@ -404,17 +518,17 @@ export default function App() {
           );
           break;
         case "c":
-          // Open the picker with no account preselected when none is open.
+          // Open the picker with no deal preselected when none is open.
           // Silently attaching a task to whatever sorted first is how a board
           // stops being trustworthy.
-          setNewTaskFor(openAccountId ?? "");
+          setNewTaskFor(openDealId ?? "");
           break;
         case "n":
-          if (openAccountId) composerRef.current?.focus();
+          if (openDealId) composerRef.current?.focus();
           break;
         case "Escape":
           if (paletteOpen) setPaletteOpen(false);
-          else if (openAccountId) setOpenAccountId(null);
+          else if (openDealId) setOpenDealId(null);
           break;
         case "j":
         case "k": {
@@ -430,14 +544,14 @@ export default function App() {
         }
         case "Enter": {
           const card = visibleCards.find((c) => c.id === selectedId);
-          if (card) setOpenAccountId(card.account_id);
+          if (card) setOpenDealId(card.deal_id);
           break;
         }
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [visibleCards, selectedId, openAccountId, paletteOpen]);
+  }, [visibleCards, selectedId, openDealId, paletteOpen]);
 
   // --- render ---------------------------------------------------------------
   const degraded = source === "local";
@@ -453,9 +567,10 @@ export default function App() {
         onGroupBy={setGroupBy}
         onFilters={(f) => { setActiveMetric(null); setFilters(f); }}
         onOpenPalette={() => { setPaletteOpen(true); searchRef.current?.blur(); }}
-        onNewTask={() => setNewTaskFor(openAccountId ?? "")}
-        onNewClient={() => setNewClientOpen(true)}
-        trashCount={trash.length}
+        onNewTask={() => setNewTaskFor(openDealId ?? "")}
+        onNewClient={() => setNewCompanyOpen(true)}
+        onNewDeal={() => setNewDealFor("")}
+        trashCount={trashDeals.length + trashCompanies.length}
       />
 
       {degraded && <DegradedBanner onRetry={() => refresh()} />}
@@ -466,11 +581,28 @@ export default function App() {
         />
       ) : onTrash ? (
         <Trash
-          rows={trash}
-          onRestore={restoreClient}
-          onHardDelete={hardDeleteClient}
+          deals={trashDeals}
+          companies={trashCompanies}
+          onRestore={restoreTrashed}
+          onHardDelete={hardDeleteTrashed}
           onBack={() => navigate("..")}
         />
+      ) : openCompanyId ? (
+        companyDetail ? (
+          <CompanyView
+            detail={companyDetail}
+            onBack={() => navigate("..")}
+            onOpenDeal={(id) => { navigate(".."); setOpenDealId(id); }}
+            onNewDeal={(id) => setNewDealFor(id)}
+            onAddContact={addContact}
+            onDeleteContact={deleteContact}
+            onArchive={() =>
+              archiveCompany(companyDetail.company.id, companyDetail.company.name)
+            }
+          />
+        ) : (
+          <BoardSkeleton />
+        )
       ) : (
         <>
       <MetricsStrip metrics={metrics} activeKey={activeMetric} onApply={applyMetric} />
@@ -498,20 +630,24 @@ export default function App() {
       {board && board.total_cards === 0 && board.book_size === 0 && (
         <div className="board-wrap">
           <div className="empty-state">
-            <h2>No clients yet</h2>
+            <h2>{companies.length ? "No active deals" : "No clients yet"}</h2>
             <p>
-              The board is ready — five columns, health scoring and the attention
-              queue all work as soon as there is something to track. Add the first
-              client and it lands in {entryColumnLabel(board)}.
+              {companies.length
+                ? `${companies.length} ${companies.length === 1 ? "client is" : "clients are"} on file, but nothing is being delivered for them. Open a deal and it lands in ${entryColumnLabel(board)}.`
+                : `The board is ready — five columns, health scoring and the attention queue all work as soon as there is something to track. Add a client, then open a deal against them, and it lands in ${entryColumnLabel(board)}.`}
             </p>
-            <button type="button" className="btn primary" onClick={() => setNewClientOpen(true)}>
-              Add the first client
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => (companies.length ? setNewDealFor("") : setNewCompanyOpen(true))}
+            >
+              {companies.length ? "Open the first deal" : "Add the first client"}
             </button>
             {board.archived_count > 0 && (
               <p className="empty-aside">
                 <Link to="trash">
                   {board.archived_count} deleted{" "}
-                  {board.archived_count === 1 ? "client is" : "clients are"} in Trash
+                  {board.archived_count === 1 ? "deal is" : "deals are"} in Trash
                 </Link>
                 {" "}and can be restored.
               </p>
@@ -525,8 +661,10 @@ export default function App() {
           <div className="empty-state">
             <h2>Nothing matches these filters</h2>
             <p>
-              {board.book_size} {board.book_size === 1 ? "client is" : "clients are"} on the
-              board — none of them match what is selected right now.
+              {board.book_size} {board.book_size === 1 ? "deal is" : "deals are"} on the
+              board across {board.company_count}{" "}
+              {board.company_count === 1 ? "client" : "clients"} — none of them
+              match what is selected right now.
             </p>
             <button type="button" className="btn" onClick={() => { setFilters({}); setActiveMetric(null); }}>
               Clear filters
@@ -542,32 +680,34 @@ export default function App() {
           selectedId={selectedId}
           collapsedLanes={collapsedLanes}
           onToggleLane={toggleLane}
-          onOpen={openAccount}
+          onOpen={openDeal}
           onMove={handleDrop}
         />
       )}
         </>
       )}
 
-      {detail && openAccountId && (
+      {detail && openDealId && (
         <Drawer
           detail={detail}
-          onClose={() => setOpenAccountId(null)}
-          onPatch={(patch) => patchAccount(openAccountId, patch)}
+          onClose={() => setOpenDealId(null)}
+          onPatch={(patch) => patchDeal(openDealId, patch)}
           onToggleTask={(task) => toggleTask(task.id, task.status !== "done")}
           onOverride={(band, reason) => saveOverride(band as HealthBand, reason)}
           onClearOverride={clearOverride}
-          onAddTask={() => setNewTaskFor(openAccountId)}
-          onAddContact={() => addContact(openAccountId)}
-          onPatchContact={(id, patch) => patchContact(openAccountId, id, patch)}
-          onDeleteContact={(id) => deleteContact(openAccountId, id)}
-          onDeleteAccount={() => archiveClient(openAccountId, detail.account.name)}
+          onAddTask={() => setNewTaskFor(openDealId)}
+          onAddContact={() => detail.company && addContact(detail.company.id)}
+          onPatchContact={(id, patch) => patchContact(id, patch)}
+          onDeleteContact={(id) => deleteContact(id)}
+          onDeleteDeal={() => archiveDeal(openDealId, detail.deal.name)}
+          onOpenCompany={() => detail.company && openCompany(detail.company.id)}
+          onSetOutcome={(outcome, reason) => setOutcome(openDealId, outcome, reason)}
         />
       )}
 
       {overrideFor && detail && (
         <OverrideDialog
-          accountName={detail.account.name}
+          dealName={detail.deal.name}
           score={detail.health.score}
           computedBand={detail.health.computed_band_label}
           current={overrideFor.band ?? detail.health.override?.band ?? null}
@@ -579,30 +719,41 @@ export default function App() {
 
       {newTaskFor !== null && (
         <NewTaskDialog
-          accounts={visibleCards.map((c) => ({ id: c.account_id, name: c.name, key: c.key }))}
-          initialAccountId={newTaskFor}
-          onSubmit={(accountId, title, bucket, due, type, priority) => {
-            createTask(accountId, title, bucket, due, type, priority);
+          deals={visibleCards.map((c) => ({ id: c.deal_id, name: c.name, key: c.key }))}
+          initialDealId={newTaskFor}
+          onSubmit={(dealId, title, bucket, due, type, priority) => {
+            createTask(dealId, title, bucket, due, type, priority);
             setNewTaskFor(null);
           }}
           onClose={() => setNewTaskFor(null)}
         />
       )}
 
-      {newClientOpen && (
-        <NewClientDialog
+      {newCompanyOpen && (
+        <NewCompanyDialog
           busy={creating}
-          onSubmit={createClient}
-          onClose={() => setNewClientOpen(false)}
+          onSubmit={createCompany}
+          onClose={() => setNewCompanyOpen(false)}
+        />
+      )}
+
+      {newDealFor !== null && (
+        <NewDealDialog
+          companies={companies}
+          contactsFor={contactsFor}
+          initialCompanyId={newDealFor}
+          busy={creating}
+          onSubmit={createDeal}
+          onClose={() => setNewDealFor(null)}
         />
       )}
 
       {paletteOpen && (
         <CommandPalette
-            onClose={() => setPaletteOpen(false)}
-          onOpenAccount={openAccount}
-              onNewTask={() => setNewTaskFor(openAccountId ?? "")}
-          onLogActivity={() => composerRef.current?.focus()}
+          onClose={() => setPaletteOpen(false)}
+          onOpenDeal={openDeal}
+          onOpenCompany={openCompany}
+          onNewTask={() => setNewTaskFor(openDealId ?? "")}
         />
       )}
 

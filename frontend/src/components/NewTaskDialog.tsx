@@ -18,33 +18,37 @@ const PRIORITIES: TaskPriority[] = ["critical", "high", "normal"];
  * Manual task creation. Tasks made here carry no `provenance` — that string is
  * reserved for alert-generated tasks, and is how the board distinguishes work it
  * raised from work a person chose.
+ *
+ * A task belongs to a DEAL, not a client: "chase the contract" is about one
+ * engagement, and a client with three deals would otherwise collect tasks with
+ * no way to tell which work they belong to.
  */
 export function NewTaskDialog({
-  accounts,
-  initialAccountId,
+  deals,
+  initialDealId,
   onSubmit,
   onClose,
 }: {
-  accounts: { id: string; name: string; key: string }[];
-  initialAccountId: string;
-  onSubmit: (accountId: string, title: string, bucket: TaskBucket, due: string,
+  deals: { id: string; name: string; key: string }[];
+  initialDealId: string;
+  onSubmit: (dealId: string, title: string, bucket: TaskBucket, due: string,
              type: TaskType, priority: TaskPriority) => void;
   onClose: () => void;
 }) {
   // Defaults to nothing when opened from the board. Silently attaching a task
-  // to whichever account sorted first is worse than asking.
-  const [accountId, setAccountId] = useState(initialAccountId);
+  // to whichever deal sorted first is worse than asking.
+  const [dealId, setDealId] = useState(initialDealId);
   const [title, setTitle] = useState("");
   const [bucket, setBucket] = useState<TaskBucket>("this_week");
   const [type, setType] = useState<TaskType>("checkin");
   const [priority, setPriority] = useState<TaskPriority>("normal");
   const [due, setDue] = useState(isoPlusDays(3));
 
-  const ready = accountId !== "" && title.trim() !== "";
+  const ready = dealId !== "" && title.trim() !== "";
 
   function submit() {
     if (!ready) return;
-    onSubmit(accountId, title.trim(), bucket, due, type, priority);
+    onSubmit(dealId, title.trim(), bucket, due, type, priority);
   }
 
   return (
@@ -59,10 +63,10 @@ export function NewTaskDialog({
         <h3>New task</h3>
 
         <label className="field">
-          <span className="field-label">Account</span>
-          <select value={accountId} onChange={(e) => setAccountId(e.target.value)} autoFocus>
-            <option value="">Choose an account…</option>
-            {accounts.map((a) => (
+          <span className="field-label">Deal</span>
+          <select value={dealId} onChange={(e) => setDealId(e.target.value)} autoFocus>
+            <option value="">Choose a deal…</option>
+            {deals.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name} · {a.key}
               </option>

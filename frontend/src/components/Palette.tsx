@@ -3,10 +3,14 @@ import type { HealthBand } from "../lib/types";
 import { apiGet } from "../lib/api";
 
 interface SearchResults {
-  accounts: { id: string; key: string; name: string; mode_label: string; workstream_label: string; health_score: number }[];
-  contacts: { id: string; name: string; role: string; account_id: string; account_name: string }[];
-  tasks: { id: string; title: string; type_label: string; account_id: string; account_name: string }[];
-  activities: { id: string; type: string; summary: string; account_id: string; account_name: string }[];
+  /** Companies and deals are separate groups on purpose: searching "Prestige"
+   *  should offer both the client and its engagements, because which one you
+   *  want depends on what you are about to do. */
+  companies: { id: string; key: string; name: string; city: string | null; deal_count: number }[];
+  deals: { id: string; key: string; name: string; company_name: string; mode_label: string;
+           workstream_label: string; outcome: string; health_score: number }[];
+  contacts: { id: string; name: string; role: string; company_id: string; company_name: string }[];
+  tasks: { id: string; title: string; type_label: string; deal_id: string; deal_name: string }[];
 }
 
 interface Command {
@@ -19,12 +23,12 @@ interface Command {
 
 interface Props {
   onClose: () => void;
-  onOpenAccount: (accountId: string) => void;
+  onOpenDeal: (dealId: string) => void;
+  onOpenCompany: (companyId: string) => void;
   onNewTask: () => void;
-  onLogActivity: () => void;
 }
 
-export function CommandPalette({ onClose, onOpenAccount, onNewTask, onLogActivity }: Props) {
+export function CommandPalette({ onClose, onOpenDeal, onOpenCompany, onNewTask }: Props) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResults | null>(null);
   const [active, setActive] = useState(0);
@@ -49,13 +53,26 @@ export function CommandPalette({ onClose, onOpenAccount, onNewTask, onLogActivit
     const q = query.trim().toLowerCase();
     const out: Command[] = [];
 
-    results?.accounts.forEach((a) =>
+    results?.companies.forEach((c) =>
       out.push({
-        id: `acct-${a.id}`,
-        group: "Go to account",
-        title: a.name,
-        sub: `${a.key} · ${a.mode_label} · ${a.workstream_label} · ${a.health_score}`,
-        run: () => { onOpenAccount(a.id); onClose(); },
+        id: `co-${c.id}`,
+        group: "Clients",
+        title: c.name,
+        sub: `${c.key}${c.city ? ` · ${c.city}` : ""} · ${c.deal_count} active ${
+          c.deal_count === 1 ? "deal" : "deals"
+        }`,
+        run: () => { onOpenCompany(c.id); onClose(); },
+      })
+    );
+    results?.deals.forEach((d) =>
+      out.push({
+        id: `dl-${d.id}`,
+        group: "Deals",
+        title: d.name,
+        sub: `${d.key} · ${d.company_name} · ${d.mode_label} · ${d.workstream_label}${
+          d.outcome === "active" ? ` · ${d.health_score}` : ` · ${d.outcome}`
+        }`,
+        run: () => { onOpenDeal(d.id); onClose(); },
       })
     );
     results?.contacts.forEach((c) =>
@@ -63,8 +80,11 @@ export function CommandPalette({ onClose, onOpenAccount, onNewTask, onLogActivit
         id: `ct-${c.id}`,
         group: "Contacts",
         title: c.name,
-        sub: `${c.role} · ${c.account_name}`,
-        run: () => { onOpenAccount(c.account_id); onClose(); },
+        sub: `${c.role} · ${c.company_name}`,
+        // Contacts belong to the company, so a contact hit opens the client,
+        // not one of its deals — which deal a person relates to is exactly what
+        // the company view is there to show.
+        run: () => { onOpenCompany(c.company_id); onClose(); },
       })
     );
     results?.tasks.forEach((t) =>
@@ -72,28 +92,18 @@ export function CommandPalette({ onClose, onOpenAccount, onNewTask, onLogActivit
         id: `tk-${t.id}`,
         group: "Tasks",
         title: t.title,
-        sub: `${t.account_name} · ${t.type_label}`,
-        run: () => { onOpenAccount(t.account_id); onClose(); },
-      })
-    );
-    results?.activities.forEach((a) =>
-      out.push({
-        id: `ac-${a.id}`,
-        group: "Activity",
-        title: a.summary,
-        sub: `${a.account_name} · ${a.type}`,
-        run: () => { onOpenAccount(a.account_id); onClose(); },
+        sub: `${t.deal_name} · ${t.type_label}`,
+        run: () => { onOpenDeal(t.deal_id); onClose(); },
       })
     );
 
     const actions: Command[] = [
       { id: "cmd-task", group: "Commands", title: "New task", run: () => { onNewTask(); onClose(); } },
-      { id: "cmd-log", group: "Commands", title: "Log activity on open account", run: () => { onLogActivity(); onClose(); } },
     ];
 
     out.push(...actions.filter((a) => !q || a.title.toLowerCase().includes(q)));
     return out;
-  }, [results, query, onOpenAccount, onClose, onNewTask, onLogActivity]);
+  }, [results, query, onOpenDeal, onOpenCompany, onClose, onNewTask]);
 
   useEffect(() => { setActive(0); }, [query, results]);
 
@@ -119,7 +129,7 @@ export function CommandPalette({ onClose, onOpenAccount, onNewTask, onLogActivit
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Search accounts, contacts, tasks — or type a command…"
+          placeholder="Search clients, deals, contacts, tasks — or type a command…"
           aria-label="Command palette input"
         />
         <div className="palette-list" ref={listRef}>
@@ -149,9 +159,9 @@ export function CommandPalette({ onClose, onOpenAccount, onNewTask, onLogActivit
 }
 
 export function OverrideDialog({
-  accountName, score, computedBand, current, currentReason, onSubmit, onClose,
+  dealName, score, computedBand, current, currentReason, onSubmit, onClose,
 }: {
-  accountName: string;
+  dealName: string;
   score: number;
   computedBand: string;
   current: HealthBand | null;
@@ -171,7 +181,7 @@ export function OverrideDialog({
       >
         <h3>Set manual health override</h3>
         <p>
-          {accountName} scores <b>{score}</b> ({computedBand}). Your judgement beats the score — but the
+          {dealName} scores <b>{score}</b> ({computedBand}). Your judgement beats the score — but the
           reason is recorded, and the score stays visible underneath.
         </p>
         <div>

@@ -3,7 +3,7 @@ import { Sparkline } from "./Sparkline";
 import { TaskRow } from "./Cards";
 import { EmailThreadsBoundary, EmailThreadsPanel } from "./EmailThreads";
 import { formatINR, inrExact, velocityGlyph } from "../lib/format";
-import type { AccountDetail, ClientType, CommMode, CostItem, LineItem, Mode, Workstream, TaskCard } from "../lib/types";
+import type { CommMode, CostItem, DealDetail, LineItem, Mode, Outcome, TaskCard, Workstream } from "../lib/types";
 
 const WORKSTREAMS: { value: Workstream; label: string }[] = [
   { value: "bot_making", label: "Bot-Making" },
@@ -13,10 +13,6 @@ const WORKSTREAMS: { value: Workstream; label: string }[] = [
 const MODES: { value: Mode; label: string }[] = [
   { value: "pilot", label: "Pilot" },
   { value: "customer", label: "Customer" },
-];
-const CLIENT_TYPES: { value: ClientType; label: string }[] = [
-  { value: "voice_ai_only", label: "Voice AI only" },
-  { value: "data_plus_voice_ai", label: "Data + Voice AI" },
 ];
 const COMM: { value: CommMode; label: string }[] = [
   { value: "whatsapp", label: "WhatsApp" },
@@ -69,9 +65,11 @@ export function Drawer({
   onAddContact,
   onPatchContact,
   onDeleteContact,
-  onDeleteAccount,
+  onDeleteDeal,
+  onOpenCompany,
+  onSetOutcome,
 }: {
-  detail: AccountDetail;
+  detail: DealDetail;
   onClose: () => void;
   onPatch: (patch: Record<string, unknown>) => void;
   onToggleTask: (task: TaskCard) => void;
@@ -81,7 +79,9 @@ export function Drawer({
   onAddContact: () => void;
   onPatchContact: (id: string, patch: Record<string, unknown>) => void;
   onDeleteContact: (id: string) => void;
-  onDeleteAccount: () => void;
+  onDeleteDeal: () => void;
+  onOpenCompany: () => void;
+  onSetOutcome: (outcome: Outcome, reason: string) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [overrideOpen, setOverrideOpen] = useState(false);
@@ -89,8 +89,12 @@ export function Drawer({
   const [overrideReason, setOverrideReason] = useState("");
   const [note, setNote] = useState(detail.health.note ?? "");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // Held rather than applied immediately: `lost` needs a reason, and the server
+  // rejects it without one, so the chip opens a prompt instead of firing.
+  const [outcomeDraft, setOutcomeDraft] = useState<Outcome | null>(null);
+  const [outcomeReason, setOutcomeReason] = useState("");
 
-  const { account, health, commercials, attention } = detail;
+  const { deal, company, poc, health, commercials, attention } = detail;
   const vel = velocityGlyph(health.velocity);
 
   const lineItemsSum = commercials.quoted_line_items.reduce(
@@ -141,24 +145,33 @@ export function Drawer({
   return (
     <>
       <div className="scrim" onClick={onClose} aria-hidden="true" />
-      <aside className="drawer" ref={ref} role="dialog" aria-modal="true" aria-label={account.name}>
+      <aside className="drawer" ref={ref} role="dialog" aria-modal="true" aria-label={deal.name}>
         <header className="drawer-head">
           <div className="drawer-title-row">
             <span className={`health-dot dot-${health.dot}`} aria-hidden="true" />
-            <h2>{account.name}</h2>
-            <span className="card-key">{account.key}</span>
-            <span className={`chip chip-${account.mode}`}>{account.mode_label.toUpperCase()}</span>
-            <span className="chip chip-grey">{account.client_type_label}</span>
-            <span className="chip chip-grey">{account.column_label}</span>
+            <h2>{deal.name}</h2>
+            <span className="card-key">{deal.key}</span>
+            <span className={`chip chip-${deal.mode}`}>{deal.mode_label.toUpperCase()}</span>
+            {company && (
+              <button type="button" className="chip chip-link" onClick={onOpenCompany}>
+                {company.name}
+              </button>
+            )}
+            <span className="chip chip-grey">{deal.column_label}</span>
+            {deal.outcome !== "active" && (
+              <span className={`chip chip-${deal.outcome}`}>
+                {deal.outcome.toUpperCase()}
+              </span>
+            )}
             <button className="drawer-close" onClick={onClose} aria-label="Close">
               ×
             </button>
           </div>
-          {(account.stalled_handoff || account.column_stalled || health.override?.stale) && (
+          {(deal.stalled_handoff || deal.column_stalled || health.override?.stale) && (
             <div className="attention-strip">
-              {account.stalled_handoff && <span>Handoff stalled</span>}
-              {account.column_stalled && (
-                <span>{account.days_in_column}d in {account.column_label}</span>
+              {deal.stalled_handoff && <span>Handoff stalled</span>}
+              {deal.column_stalled && (
+                <span>{deal.days_in_column}d in {deal.column_label}</span>
               )}
               {health.override?.stale && (
                 <span>Override set {health.override.age_days}d ago — still accurate?</span>
@@ -167,7 +180,7 @@ export function Drawer({
           )}
           {/* The ranking has to stay interrogable. Terms keep the order the
               formula weights them, so this reads as an explanation of the
-              scoring rather than a leaderboard of this account's worst numbers. */}
+              scoring rather than a leaderboard of this deal's worst numbers. */}
           {attention.summary && (
             <p className="attention-why">
               <span className="attention-rank">Attention {Math.round(attention.score)}</span>
@@ -178,18 +191,37 @@ export function Drawer({
 
         <div className="drawer-body">
           <Panel title="Overview">
-            <Field label="Client Type">
+            {/* Client Type moved to the company: it describes WHO the client
+                is, not what this engagement does, and one company's two deals
+                cannot disagree about it. Shown here read-only, editable on the
+                company view — one field, one place. */}
+            <Field label="Client">
+              {company ? (
+                <button type="button" className="link-chip" onClick={onOpenCompany}>
+                  {company.name} · {company.client_type_label}
+                </button>
+              ) : (
+                <span className="panel-muted">Unknown</span>
+              )}
+            </Field>
+            <Field label="POC">
+              {/* Only this company's contacts. The server enforces the same set
+                  — a POC from another company is rejected regardless of what
+                  the picker offers. */}
               <select
-                value={account.client_type}
-                onChange={(e) => onPatch({ client_type: e.target.value })}
+                value={deal.poc_id}
+                onChange={(e) => onPatch({ poc_id: e.target.value })}
               >
-                {CLIENT_TYPES.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
+                {detail.contacts.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}{c.role ? ` · ${c.role}` : ""}
+                  </option>
                 ))}
               </select>
+              {poc?.email && <span className="field-sub">{poc.email}</span>}
             </Field>
             <Field label="Mode">
-              <select value={account.mode} onChange={(e) => onPatch({ mode: e.target.value })}>
+              <select value={deal.mode} onChange={(e) => onPatch({ mode: e.target.value })}>
                 {MODES.map((o) => (
                   <option key={o.value} value={o.value}>{o.label}</option>
                 ))}
@@ -198,7 +230,7 @@ export function Drawer({
             <Field label="Workstream">
               {/* Edited here only — never changed by dragging between columns. */}
               <select
-                value={account.workstream}
+                value={deal.workstream}
                 onChange={(e) => onPatch({ workstream: e.target.value })}
               >
                 {WORKSTREAMS.map((o) => (
@@ -213,12 +245,12 @@ export function Drawer({
             <Field label="Last contact">
               {/* Hand-maintained since activity logging was removed, so it has
                   to be one click. Unset is neutral everywhere it is read, never
-                  a penalty — an account nobody filled in is not an account
+                  a penalty — a deal nobody filled in is not a deal
                   nobody called. */}
               <div className="date-set">
                 <input
                   type="date"
-                  value={account.last_contact_at ? account.last_contact_at.slice(0, 10) : ""}
+                  value={deal.last_contact_at ? deal.last_contact_at.slice(0, 10) : ""}
                   onChange={(e) =>
                     onPatch({ last_contact_at: e.target.value ? `${e.target.value}T12:00:00` : null })
                   }
@@ -230,9 +262,9 @@ export function Drawer({
                   Today
                 </button>
                 <span className="panel-muted">
-                  {account.days_since_contact === null
+                  {deal.days_since_contact === null
                     ? "not recorded"
-                    : `${account.days_since_contact}d ago`}
+                    : `${deal.days_since_contact}d ago`}
                 </span>
               </div>
             </Field>
@@ -346,7 +378,7 @@ export function Drawer({
                     evidence of contact: its date sets the field the engagement
                     score reads. */}
                 <EmailThreadsPanel
-                  accountId={account.id}
+                  dealId={deal.id}
                   onMarkContacted={(iso) => onPatch({ last_contact_at: iso })}
                 />
               </EmailThreadsBoundary>
@@ -569,9 +601,39 @@ export function Drawer({
             {detail.tasks.length === 0 && <p className="panel-muted">No tasks</p>}
           </Panel>
 
-          {/* Last, and visually quiet. Delete is soft: this moves the client to
-              Trash, where it keeps its contacts, tasks and health history until
-              someone deletes it permanently on purpose. */}
+          {/* Outcome is a separate axis from the column, and the UI has to keep
+              them separate too: a deal can be lost from anywhere, and Launch is
+              where active work ends up rather than a declaration that it is
+              finished. */}
+          <Panel title="Outcome">
+            <div className="popover-chips">
+              {(["active", "completed", "lost"] as Outcome[]).map((o) => (
+                <button
+                  key={o}
+                  type="button"
+                  className={`chip${o === "lost" ? " chip-danger" : ""}`}
+                  aria-pressed={deal.outcome === o}
+                  onClick={() => setOutcomeDraft(o)}
+                >
+                  {o === "active" ? "Active" : o === "completed" ? "Completed" : "Lost"}
+                </button>
+              ))}
+            </div>
+            {deal.outcome !== "active" && deal.outcome_reason && (
+              <p className="panel-muted">{deal.outcome_reason}</p>
+            )}
+            {deal.outcome === "active" && (
+              <p className="panel-muted">
+                On the board. Completing or losing it removes the card and files
+                it under this client's history.
+              </p>
+            )}
+          </Panel>
+
+          {/* Last, and visually quiet. Delete is soft: this moves the deal to
+              Trash, where it keeps its tasks and health history until someone
+              deletes it permanently on purpose. Not the same as marking it
+              lost — that is a result, this is a record that should not exist. */}
           <div className="drawer-danger">
             <button
               type="button"
@@ -586,26 +648,82 @@ export function Drawer({
         </div>
       </aside>
 
+      {outcomeDraft && (
+        <div className="dialog-scrim" onClick={() => setOutcomeDraft(null)}>
+          <div
+            className="dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={`Mark ${deal.name} ${outcomeDraft}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3>
+              {outcomeDraft === "active"
+                ? `Reopen ${deal.name}?`
+                : `Mark ${deal.name} ${outcomeDraft}?`}
+            </h3>
+            <p className="dialog-body">
+              {outcomeDraft === "active"
+                ? "It goes back on the board and starts being scored again."
+                : "It leaves the board and is filed under this client's history. Nothing is deleted."}
+            </p>
+            {outcomeDraft !== "active" && (
+              <label className="field">
+                <span className="field-label">
+                  Reason{outcomeDraft === "lost" ? "" : " (optional)"}
+                </span>
+                <textarea
+                  value={outcomeReason}
+                  autoFocus
+                  placeholder={
+                    outcomeDraft === "lost"
+                      ? "Why did we lose it? This is the whole point of recording it."
+                      : "Anything worth remembering about how it finished."
+                  }
+                  onChange={(e) => setOutcomeReason(e.target.value)}
+                />
+              </label>
+            )}
+            <div className="dialog-actions">
+              <button className="btn subtle" onClick={() => setOutcomeDraft(null)}>Cancel</button>
+              <button
+                className={`btn${outcomeDraft === "lost" ? " danger" : " primary"}`}
+                /* A lost deal must give a reason — the server enforces it too,
+                   so this only saves the user a rejected round trip. */
+                disabled={outcomeDraft === "lost" && !outcomeReason.trim()}
+                onClick={() => {
+                  onSetOutcome(outcomeDraft, outcomeReason.trim());
+                  setOutcomeDraft(null);
+                  setOutcomeReason("");
+                }}
+              >
+                {outcomeDraft === "active" ? "Reopen" : "Confirm"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {confirmDelete && (
         <div className="dialog-scrim" onClick={() => setConfirmDelete(false)}>
           <div
             className="dialog"
             role="dialog"
             aria-modal="true"
-            aria-label={`Delete ${account.name}`}
+            aria-label={`Delete ${deal.name}`}
             onClick={(e) => e.stopPropagation()}
           >
-            <h3>Delete {account.name}?</h3>
+            <h3>Delete {deal.name}?</h3>
             <p className="dialog-body">
-              It moves to Trash and leaves the board and every metric. Its contacts,
-              tasks and health history stay intact, and you can restore it from
-              there at any time.
+              It moves to Trash and leaves the board and every metric. Its tasks
+              and health history stay intact, and you can restore it from there
+              at any time. The client and its contacts are untouched.
             </p>
             <div className="dialog-actions">
               <button className="btn subtle" onClick={() => setConfirmDelete(false)}>Cancel</button>
               <button
                 className="btn danger"
-                onClick={() => { setConfirmDelete(false); onDeleteAccount(); }}
+                onClick={() => { setConfirmDelete(false); onDeleteDeal(); }}
               >
                 Move to Trash
               </button>
