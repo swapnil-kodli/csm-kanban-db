@@ -4,10 +4,15 @@
 
 ## The question
 
-Signal CS can run on Supabase Postgres instead of the SQLite file, but only if
-the host running the backend container is permitted to open an outbound TCP
-connection to Supabase's pooler. That is a property of the network, not of the
-application, so no amount of reading the code answers it.
+Two integrations need outbound access to a third party, and whether the host
+running the backend is permitted to open that connection is a property of the
+network, not of the application — so no amount of reading the code answers it:
+
+  Supabase Postgres   *.pooler.supabase.com on 5432 (session) and 6543 (txn)
+  Gmail               accounts.google.com, oauth2.googleapis.com,
+                      gmail.googleapis.com, www.googleapis.com — all on 443
+
+The probe takes any host:port, so it answers both, and any future one.
 
 ## What it does
 
@@ -27,11 +32,13 @@ the control.
 ```sh
 docker build -t egress-probe tools/egress-probe
 
-# Both Supabase ports (5432 session/direct, 6543 transaction pooler):
+# Both Supabase ports (5432 session/direct, 6543 transaction pooler are the
+# default when no port is given):
 docker run --rm egress-probe aws-0-<region>.pooler.supabase.com
 
-# Or one specific endpoint:
-docker run --rm egress-probe db.<project-ref>.supabase.co:5432
+# Gmail — every host the integration touches, all on 443:
+docker run --rm egress-probe accounts.google.com:443 oauth2.googleapis.com:443 \
+                             gmail.googleapis.com:443 www.googleapis.com:443
 ```
 
 Run it **from the host that will actually run the backend**. A result from a
@@ -44,9 +51,23 @@ Exit code is `0` when every target connected and `1` otherwise.
 
 | Result | Meaning | Next step |
 |---|---|---|
-| Supabase OPEN | Egress is allowed | Ship the Postgres port; credentials are the next problem |
-| Supabase BLOCK, control OPEN | An allowlist is blocking Supabase specifically | Ask for the pooler host to be allowlisted, or take the fallback |
+| Targets OPEN | Reachable from this host | Proceed — but see the limit below |
+| Targets BLOCK, control OPEN | An allowlist is blocking those hosts specifically | Get them allowlisted, or take a route that avoids them |
 | Everything BLOCK | No outbound TCP from this network at all | Re-run from the real host; this one cannot answer the question |
+
+**What OPEN does not prove.** A TCP handshake is not a working integration. An
+intercepting proxy can accept the socket and still fail certificate
+verification — which is exactly what happens to `pip` and `npm` inside build
+containers in some sandboxes. To confirm TLS and HTTP actually complete, follow
+an OPEN result with a real unauthenticated request, e.g.
+
+```sh
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  https://accounts.google.com/.well-known/openid-configuration
+```
+
+A `200` there means the path is genuinely usable. Credentials remain a separate
+question after that.
 
 ## The fallback
 

@@ -99,13 +99,18 @@ def main(argv: list[str]) -> int:
     print(f"\n  [{'OPEN ' if reached else 'BLOCK'}] control {CONTROL[0]}:{CONTROL[1]}"
           f"  ({elapsed:.2f}s)  {detail}")
 
+    names = ", ".join(sorted({h for h, _ in targets}))
     print()
     if ok:
-        print("VERDICT: egress to Supabase is allowed. Ship the Postgres port.")
+        print(f"VERDICT: outbound TCP to {names} is allowed from this host.")
+        print("         NOTE: this proves reachability only. It does not prove TLS")
+        print("         completes — an intercepting proxy can accept the socket and")
+        print("         still fail certificate verification — and it proves nothing")
+        print("         about credentials. Both are separate, later questions.")
     elif reached:
-        print("VERDICT: this host has egress, but not to Supabase. An allowlist is")
-        print("         blocking it — either add the pooler host, or fall back to")
-        print("         Postgres in the compose stack with a persistent volume.")
+        print(f"VERDICT: this host has egress, but not to {names}. Something is")
+        print("         allowlisting specific destinations. Either get these hosts")
+        print("         added, or take a route that does not need them.")
     else:
         print("VERDICT: no outbound TCP at all from here, not even the control.")
         print("         This probe cannot answer the question from this network;")
